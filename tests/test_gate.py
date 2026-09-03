@@ -5,6 +5,7 @@ from agency_os.gate import (
     assert_not_gate_opening,
     is_gate_opening_comment,
     parse_gate_decision,
+    strip_quotes_and_code,
 )
 
 
@@ -53,6 +54,43 @@ class GateOpeningGuardTests(unittest.TestCase):
 
     def test_agent_may_write_anything_else(self):
         assert_not_gate_opening("Poortkaart staat klaar, wacht op een mens.", author_is_agent=True)
+
+
+class StripQuotesAndCodeTests(unittest.TestCase):
+    """Spec 7.8: een token binnen een citaat of codeblok telt nooit."""
+
+    def test_a_quoted_token_is_removed(self):
+        self.assertEqual(strip_quotes_and_code("> AKKOORD\n\nzei de klant"), "\nzei de klant")
+
+    def test_a_fenced_token_is_removed_with_its_block(self):
+        text = "Ik citeer:\n\n```\nAKKOORD\n```\n\nmaar ik beslis nog niet."
+        cleaned = strip_quotes_and_code(text)
+        self.assertNotIn("AKKOORD", cleaned)
+        self.assertIn("maar ik beslis nog niet.", cleaned)
+
+    def test_a_tilde_fence_counts_too(self):
+        self.assertNotIn("AKKOORD", strip_quotes_and_code("~~~\nAKKOORD\n~~~"))
+
+    def test_a_language_tagged_fence_counts_too(self):
+        self.assertNotIn("AKKOORD", strip_quotes_and_code("```markdown\nAKKOORD\n```"))
+
+    def test_an_unclosed_fence_swallows_the_rest(self):
+        self.assertEqual(strip_quotes_and_code("```\nAKKOORD\nnog meer"), "")
+
+    def test_plain_text_is_untouched(self):
+        self.assertEqual(strip_quotes_and_code("AKKOORD\n\nGa door."), "AKKOORD\n\nGa door.")
+
+    def test_empty_input_is_empty_output(self):
+        self.assertEqual(strip_quotes_and_code(""), "")
+        self.assertEqual(strip_quotes_and_code(None), "")
+
+    def test_a_quoted_token_does_not_parse_as_a_decision(self):
+        self.assertIsNone(parse_gate_decision(strip_quotes_and_code("> AKKOORD")))
+
+    def test_a_real_decision_still_parses_after_stripping(self):
+        text = strip_quotes_and_code("AKKOORD\n\n> eerder zei ik: AFGEKEURD")
+        decision = parse_gate_decision(text)
+        self.assertEqual(decision.outcome, "akkoord")
 
 
 if __name__ == "__main__":
