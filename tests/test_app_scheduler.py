@@ -138,6 +138,26 @@ class HappyPathTest(CycleTestCase):
         self.assertTrue(executor.requests[0].branch.startswith("feat/WV-207-"), executor.requests[0].branch)
         self.assertEqual("raderwerk/raderwerk-content", executor.requests[0].repo)
 
+    def test_the_prompt_carries_the_answer_a_human_left_in_a_comment(self):
+        """De lus vraag -> antwoord -> volgende run bestond niet.
+
+        Een rol die iets niet weet stelt volgens regel 6 een vraag en stopt, een
+        mens antwoordt in een comment, en de volgende run kreeg dat antwoord
+        nooit te zien: de prompt droeg alleen `issue.description`. Hetzelfde
+        gold voor het oordeel van de reviewer.
+        """
+        client = self.only(FakeClient(dispatcher_user_id=DISPATCHER), "WV-207")
+        issue = client.issue("WV-207")
+        client.add_comment(issue.id, "Antwoord: gebruik de richtprijs van EUR 750 voor een S.",
+                           author_id="user-mens", author_name="Youp", author_is_app=False)
+        executor = FakeExecutor(a_result())
+        scheduler.run_cycle(self.context(client, executor), 1)
+
+        prompt = executor.requests[0].prompt
+        self.assertIn("## Discussie op het issue", prompt)
+        self.assertIn("gebruik de richtprijs van EUR 750", prompt)
+        self.assertLess(prompt.index("Onwrikbare regels"), prompt.index("Discussie op het issue"))
+
     def test_a_question_parks_the_issue_with_a_human(self):
         client = self.only(FakeClient(dispatcher_user_id=DISPATCHER), "WV-207")
         result = a_result(uitkomst="vraag", question="Welke vier weken precies?", pr_url=None, artifacts=())

@@ -228,6 +228,16 @@ def rehydrate(ctx: Any, watching: dict[str, Any], errors: list[str]) -> int:
     return recovered
 
 
+def _discussion(ctx: Any, issue: Any) -> tuple:
+    """De comments op het issue voor in de prompt; een leesfout kost geen run."""
+    try:
+        return tuple(ctx.client.comments(issue.id))
+    except LinearError as exc:
+        ctx.logbook.write("run", run_id=None, issue=issue.identifier,
+                          payload={"discussie_niet_gelezen": str(exc)})
+        return ()
+
+
 def request_for(ctx: Any, job: Job) -> Any:
     """De opdracht voor B: prompt, repo, branch en de grenzen eromheen."""
     role, issue = job.route.role, job.issue
@@ -243,7 +253,8 @@ def request_for(ctx: Any, job: Job) -> Any:
         model_display=job.route.model.display,
         model_ledger=job.route.model.ledger,
         prompt=prompts.build_prompt(ctx.cfg, role, issue, run_id=job.run_id,
-                                    branch=branch, base_branch=base_branch),
+                                    branch=branch, base_branch=base_branch,
+                                    discussion=_discussion(ctx, issue)),
         repo=issue.repo,
         base_branch=base_branch,
         branch=branch,
