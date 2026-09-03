@@ -76,6 +76,12 @@ Er zijn drie remmen, van zacht naar hard, en ze zitten alle drie in Linear en ni
 
 Vergeet na een noodstop niet dat het label blijft staan. `python -m agency_os status` zegt het met zoveel woorden ("schakelaar/pauze-alles staat aan: er start niets") en geeft afloopcode `1`, zodat een cron of een healthcheck erover valt.
 
+### Lusdetectie
+
+Er is bewust geen kostenplafond; wat een plafond zou afvangen, vangt de lusdetectie af. Dezelfde rol mag hooguit drie keer op één dag op hetzelfde issue draaien (spec 8.6). Bij de vierde weigert de Spil: `lus-verdacht` en `schakelaar/pauze` op dat issue, één comment met de reden, geen claim. Drie is precies genoeg om de gewone ronde binnen een dag rond te krijgen — bouwen, afgekeurd worden, herstellen — en de eerdere grens van één per dag maakte dat onmogelijk.
+
+Alleen runs die echt gedraaid hebben tellen mee. Een poging waarbij de laan zelf niet startte — geen werkmap, een binair dat er niet is, een vlag die de CLI niet kent, een zandbak die weigert, een native sessie die nooit begon — wordt weer weggestreept zodra dat blijkt. Zo'n poging blijft wel in het Kostenboek en in het handelingenlogboek staan; hij kost alleen geen dagbeurt. Een tijdslimiet telt wél mee: dan draaide het model, het draaide alleen te lang.
+
 ## Configuratie
 
 Volgorde van winnen: vlaggen op de commandoregel, dan `os.environ`, dan `~/.config/raderwerk/spil.env`, dan de standaardwaarde. Het bestand is `KEY=VALUE` met `#`-commentaar, staat niet in deze repo en wordt nooit geprint: `status` toont alleen wáár de sleutel vandaan kwam.
@@ -110,6 +116,8 @@ Alles wat de Spil onthoudt staat buiten elke repo, onder `SPIL_STATE_DIR`: `spil
 Het ontwerp staat voluit in [docs/architecture.md](./docs/architecture.md). De korte versie: `agency_os/linear/` praat met Linear en onthoudt alles, `agency_os/executors/` draait alles buiten dit proces (claude, codex, git, gh), en `agency_os/app/` is het proces zelf: de cyclus, de routering, de prompts, het logboek en de hartslag. De afhankelijkheid loopt één kant op: app → executors → linear → standaardbibliotheek.
 
 De routeringstabel is data, geen code: `agency_os/roles/routing.json` koppelt (bord, status, labels) aan een rol, en `agency_os/roles/*.md` zijn de rolprompts. Een rol toevoegen is een regel json en een markdownbestand, geen `if`.
+
+De rollen die beoordelen in plaats van maken (`"needs_evidence": true` in die tabel: Reviewer, QA en de rookproef) krijgen bovenop hun prompt een blok `Bewijsmateriaal`: het nummer en de URL van de pull request met zijn status, de samenvatting van `gh pr checks`, de preview-URL van GitHub Pages met "pas ná merge" erbij zolang deze branch daar niet op staat, de branch met zijn HEAD-sha, en een verwijzing naar het nieuwste oordeel per rol. De Spil zoekt dat op; de rollen zelf hebben geen `gh`. Is er geen pull request, dan zegt het blok dat, en dan horen de criteria die er een nodig hebben als "niet te verifiëren" gemeld te worden.
 
 ## Hoe bijdragen (via pull request)
 

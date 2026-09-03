@@ -710,6 +710,8 @@ class RoleSpec:
     done_state: str                     # state on uitkomst=klaar
     needs_worktree: bool
     needs_pr: bool
+    model_from_label: bool = True       # false for the judging roles: agent/* is the maker's model
+    needs_evidence: bool = False        # true for the judging roles: they get the evidence block
 @dataclass(frozen=True)
 class Route:
     role: RoleSpec
@@ -718,13 +720,20 @@ class Route:
     reason: str                         # human-readable, goes in the comment (spec ch. 3 rule)
 def load_table(path: Path) -> "RoutingTable": ...
 def resolve(table, issue: IssueView, *, allow_fable: bool) -> Optional[Route]: ...
+MAX_ROLE_RUNS_PER_DAY = 3               # spec 8.6; mirrored by linear.store.LOOP_LIMIT
 def loop_guard(store, issue: IssueView, role_key: str, day: date) -> Optional[str]: ...  # reason to stop
 
 # prompts.py
 def build_prompt(cfg: Config, role: RoleSpec, issue: IssueView, *, run_id: str,
+                 branch: str = "", base_branch: str = "main",
+                 discussion: Sequence[CommentView] = (),
                  extra_context: Mapping[str, str] | None = None) -> str: ...
 def acceptance_criteria(description: str) -> list[str]: ...
 def dod_items(description: str) -> list[str]: ...
+
+# evidence.py — fills the extra_context hook for the judging roles
+def for_role(cfg: ExecutorConfig, role: RoleSpec, issue: IssueView, *, branch: str,
+             discussion: Sequence[CommentView] = ()) -> Mapping[str, str]: ...
 
 # logbook.py
 class Logbook:                          # also implements MutationSink
@@ -1190,14 +1199,43 @@ The routing table is data (`roles/routing.json`, §3.9). `resolve()` applies, in
 block (`roles/<role>.md`, lifted from `agent-roster.md`) + the issue block (identifier, title, URL,
 description, canonical labels, parsed contract, acceptance criteria, DoD) + the target repo's
 `AGENTS.md` read from the worktree + the output contract (§8.3 of the spec, plus the RUNRESULT
-shape). Assembled by C in `prompts.py`; B receives it as an opaque string and does not modify it.
+shape) + the discussion block (the issue's comments, oldest first, claim comments dropped, 12k
+characters of budget spent on the newest) + whatever `extra_context` carries. Assembled by C in
+`prompts.py`; B receives it as an opaque string and does not modify it.
 
-**Loop detection.** `loop_guard(store, issue, role_key, day)` returns a reason when
-`role_runs.count >= 1` for that (issue, role, day) — i.e. the *second* run of the same role on the
-same issue in one day is refused. Effect: `lus-verdacht` + `schakelaar/pauze` on that issue, one
-comment, no claim. A third occurrence anywhere (which should now be unreachable) trips
-`schakelaar/pauze-alles` via `trip_emergency_stop`. This is stricter than the spec's three-per-day
-threshold; see §18.
+**Evidence block** (`evidence.py`). The roles that judge rather than make — `needs_evidence` in
+`routing.json`: reviewer, qa, qa-rookproef — tick criteria that are about artefacts, and they have
+no `gh`: it is on `claude_runner.DENIED_TOOLS`, and the codex lane runs `-s read-only` with
+`mcp_servers={}`. So the dispatcher looks the artefacts up and hands them over through the
+`extra_context` hook: the PR number and URL with its state, the `gh pr checks` summary, the GitHub
+Pages preview URL (marked "pas ná merge" whenever Pages publishes a branch other than this one, and
+absent when the repo has no Pages), the branch and its HEAD sha, and a pointer to the latest
+Reviewer/QA verdict per role — a pointer, because the text itself is already in the discussion
+block and paying for it twice buys nothing. Every lookup degrades to a sentence rather than an
+exception: a `gh` that cannot log in must not cost a run, and "niet op te halen" must never read as
+green. With no PR the block says so and tells the role to report the criteria that need one as
+*niet te verifiëren*.
+
+**Loop detection.** `loop_guard(store, issue, role_key, day)` returns a reason once a role has had
+`MAX_ROLE_RUNS_PER_DAY = 3` real runs on one issue in one day. That is the spec's threshold: §8.6
+names three or more runs of the same role on the same issue in a day, and the `lus-verdacht` label
+of §3.6 reads "dezelfde rol draaide vandaag drie keer op dit issue". The fourth is refused. Effect:
+`lus-verdacht` + `schakelaar/pauze` on that issue, one comment, no claim.
+
+*Real* runs. `role_runs` carries two numbers per (issue, role, day): `count`, every claim, and
+`infra`, the claims where the lane itself never got off the ground — no worktree, no binary, a flag
+the CLI does not know, a sandbox that refuses, a native session that never started. The guard reads
+`count - infra`. `_claim` bumps `count` before the run, because a process that falls over halfway
+must still lose its turn; `runs.finish` calls `discount_role_run` when the result carries
+`ExecutionResult.infra_failure`. Executors set that flag in `base.failed()` (every "could not
+start" path) and through `claude_runner.executor_stalled` (a non-zero exit code *and* no RUNRESULT
+block). A timeout is not infrastructure: the model ran, it just ran too long. Neither is a model
+that exits cleanly with unusable prose — that is a real, bad role outcome, and discounting it would
+let one role produce prose forever without ever spending a turn.
+
+Three a day is also the minimum that lets the ordinary loop close inside one day: build, get
+rejected, repair. The earlier one-per-day rule made that impossible, and that is what cost WV-210
+the afternoon of 2026-09-03 after a single reviewer run stranded on a CLI flag.
 
 ---
 
@@ -1480,19 +1518,21 @@ Only after that loop closes without manual repair does `run --loop` get switched
 Named here rather than buried, because a design document that hides its own compromises is the
 thing this whole project is arguing against.
 
-1. **Loop detection is stricter than the spec.** Spec §8.6 says three runs of the same role on one
-   issue in a day. The MVP stops at the second. Reason: unattended running with a fresh dispatcher
-   is exactly when a loop is cheapest to catch and most likely to exist. Relax it after three clean
-   dry runs, not before.
+1. **~~Loop detection is stricter than the spec.~~ Resolved 2026-09-03.** The MVP used to stop at
+   the second run of a role on an issue in a day, where spec §8.6 allows three. Two live cycles
+   showed the price: a review-and-repair round does not fit in a day, and a single reviewer run
+   that stranded on a CLI flag cost WV-210 the rest of the afternoon. The guard is now at the
+   spec's three, and runs where the lane never started do not count toward it. See §9.
 2. **Fable is off by default.** The roster puts Fable 5.1 on Account, Strateeg, QA and Reviewer 1.
    The Fable quota is exhausted until 2026-09-05, so `SPIL_ALLOW_FABLE=false` downgrades those roles
    to Opus 5 and writes the downgrade into every affected comment. This weakens the "reviewer is
    always a different family" rule when the maker is also Claude — which is why reviewer 2
    (`codex exec`) is mandatory and not optional in the MVP.
 3. **QA has no browser.** The roster gives QA browser tooling. Headless QA in the MVP verifies
-   through the PR diff, the CI output and an HTTP GET of the preview URL (status + title). Any
-   acceptance criterion that genuinely needs a rendered page is reported as *niet te verifiëren* and
-   sets `bewijs-ontbreekt`, which blocks `Klaar`. It does not get ticked.
+   through the PR diff, the CI output and an HTTP GET of the preview URL (status + title) — all
+   three now handed to it in the evidence block of §9, since 2026-09-03. Any acceptance criterion
+   that genuinely needs a rendered page is reported as *niet te verifiëren* and sets
+   `bewijs-ontbreekt`, which blocks `Klaar`. It does not get ticked.
 4. **Branch prefix.** The launching context says `<ISSUE>-<slug>`; the spec, the roster and every
    repo's AGENTS.md say `feat/<ISSUE>-<korte-titel>`, and WV-157's acceptance criterion probes for
    `feat/<ISSUE>-*`. The MVP uses `feat/<ISSUE>-<slug>` so the idempotency probe and the repo

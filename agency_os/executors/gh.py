@@ -17,15 +17,20 @@ from agency_os.executors.process import ProcessResult, run_process
 
 __all__ = [
     "PR_FIELDS",
+    "ChecksSummary",
+    "PagesSite",
     "PullRequest",
     "find_pr_for_branch",
     "open_pr",
+    "pages_site",
+    "pr_checks",
     "pr_diff",
     "read_pr",
 ]
 
 #: Eén veldenlijst voor beide leesroutes, zodat `PullRequest` altijd compleet is.
-PR_FIELDS = "number,url,state,isDraft,mergedAt,mergedBy,headRefOid,statusCheckRollup"
+PR_FIELDS = ("number,url,state,isDraft,mergedAt,mergedBy,headRefOid,headRefName,"
+             "statusCheckRollup")
 
 _GH_TIMEOUT_S = 120
 _FAILED = {"FAILURE", "ERROR", "TIMED_OUT", "CANCELLED", "ACTION_REQUIRED", "STARTUP_FAILURE"}
@@ -46,6 +51,35 @@ class PullRequest:
     merged_by_is_bot: Optional[bool]
     head_sha: str
     checks_conclusion: Optional[str]  # success | failure | pending | None
+    head_branch: str = ""
+
+
+@dataclass(frozen=True)
+class ChecksSummary:
+    """De samenvatting van `gh pr checks`, zoals QA hem in zijn prompt krijgt."""
+
+    verdict: str  # geslaagd | mislukt | loopt nog | geen checks | niet op te halen
+    total: int = 0
+    passed: int = 0
+    failed: int = 0
+    pending: int = 0
+    failing: tuple[str, ...] = ()
+
+    def __str__(self) -> str:
+        if not self.total:
+            return self.verdict
+        line = f"{self.verdict}, {self.passed} van {self.total} checks groen"
+        if self.failing:
+            line += f"; rood: {', '.join(self.failing)}"
+        return line
+
+
+@dataclass(frozen=True)
+class PagesSite:
+    """Een GitHub Pages-site en de branch die erop gepubliceerd wordt."""
+
+    url: str
+    branch: Optional[str]  # None: gepubliceerd via een workflow, niet via een branch
 
 
 def _gh(cfg: ExecutorConfig, args: Sequence[str]) -> ProcessResult:
@@ -91,6 +125,7 @@ def _parse_pr(repo: str, node: dict) -> PullRequest:
         merged_by_is_bot=_is_bot(merged_by),
         head_sha=str(node.get("headRefOid") or ""),
         checks_conclusion=_checks(node.get("statusCheckRollup")),
+        head_branch=str(node.get("headRefName") or ""),
     )
 
 
@@ -121,7 +156,7 @@ def open_pr(
     if existing is not None:
         return existing
     if cfg.dry_run:
-        return PullRequest(repo, 0, "", "dry-run", False, False, None, None, "", None)
+        return PullRequest(repo, 0, "", "dry-run", False, False, None, None, "", None, branch)
 
     result = _gh(
         cfg,
@@ -134,7 +169,7 @@ def open_pr(
     number = int(url.rsplit("/", 1)[-1]) if url.rsplit("/", 1)[-1].isdigit() else 0
     if number:
         return read_pr(cfg, repo, number)
-    return PullRequest(repo, number, url, "OPEN", False, False, None, None, "", None)
+    return PullRequest(repo, number, url, "OPEN", False, False, None, None, "", None, branch)
 
 
 def read_pr(cfg: ExecutorConfig, repo: str, number: int) -> PullRequest:
@@ -151,3 +186,70 @@ def pr_diff(cfg: ExecutorConfig, repo: str, number: int, *, max_bytes: int = 400
         return diff
     clipped = diff.encode("utf-8")[:max_bytes].decode("utf-8", "ignore")
     return f"{clipped}\n\n[diff afgekapt op {max_bytes} bytes]\n"
+
+
+#: Wat `gh pr checks --json bucket` teruggeeft, vertaald naar het Nederlands van
+#: de comments. `skipping` en `cancel` zijn geen falen en geen slagen: ze zeggen
+#: dat de check niet gedraaid heeft.
+_BUCKET_VERDICT = {"fail": "mislukt", "pending": "loopt nog", "pass": "geslaagd"}
+
+
+def pr_checks(cfg: ExecutorConfig, repo: str, number: int) -> ChecksSummary:
+    """De CI-uitslag van één PR, samengevat.
+
+    Geeft nooit een uitzondering en gebruikt `.check()` bewust niet: `gh pr
+    checks` sluit met afloopcode 8 af als er nog iets loopt en met 1 als er iets
+    rood staat, terwijl de json in beide gevallen gewoon op stdout staat. Een
+    onleesbaar antwoord wordt "niet op te halen" -- QA hoort te weten dat de
+    uitslag ontbreekt, niet te denken dat alles groen is.
+    """
+    result = _gh(cfg, ["pr", "checks", str(number), "--repo", repo,
+                       "--json", "bucket,name,state"])
+    try:
+        nodes = json.loads(result.stdout or "null")
+    except json.JSONDecodeError:
+        nodes = None
+    if not isinstance(nodes, list):
+        return ChecksSummary("niet op te halen")
+    if not nodes:
+        return ChecksSummary("geen checks")
+
+    buckets = [str(node.get("bucket") or "").lower() for node in nodes if isinstance(node, dict)]
+    failing = tuple(
+        str(node.get("name") or "?")
+        for node in nodes
+        if isinstance(node, dict) and str(node.get("bucket") or "").lower() == "fail"
+    )
+    counted = {name: buckets.count(name) for name in ("pass", "fail", "pending")}
+    verdict = next(
+        (_BUCKET_VERDICT[name] for name in ("fail", "pending", "pass") if counted[name]),
+        "geen checks",
+    )
+    return ChecksSummary(
+        verdict=verdict,
+        total=len(buckets),
+        passed=counted["pass"],
+        failed=counted["fail"],
+        pending=counted["pending"],
+        failing=failing,
+    )
+
+
+def pages_site(cfg: ExecutorConfig, repo: str) -> Optional[PagesSite]:
+    """De GitHub Pages-site van deze repo, of None als er geen staat.
+
+    404 is het normale antwoord: de meeste repo's van de werkplaats publiceren
+    niets. Dat is informatie voor QA en geen fout.
+    """
+    result = _gh(cfg, ["api", f"repos/{repo}/pages"])
+    if not result.ok:
+        return None
+    try:
+        data = json.loads(result.stdout or "null")
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(data, dict) or data.get("message"):
+        return None
+    source = data.get("source") if isinstance(data.get("source"), dict) else {}
+    url = str(data.get("html_url") or "") or f"https://raderwerk.github.io/{repo.split('/')[-1]}/"
+    return PagesSite(url=url, branch=str(source.get("branch") or "") or None)

@@ -11,12 +11,13 @@ from unittest import mock
 
 from tests.fakes import FakeClient, FakeExecutor, issue_from_raw, load_fixture, make_issue, temp_store
 
-from agency_os.app import runs, scheduler
+from agency_os.app import evidence, routing, runs, scheduler
 from agency_os.app.config import Config
 from agency_os.app.logbook import Logbook
 from agency_os.app.routing import decide, load_table
 from agency_os.app.scheduler import Context
 from agency_os.executors.base import ExecutionResult, TriggerReceipt, Usage
+from agency_os.executors.gh import ChecksSummary, PullRequest
 from agency_os.linear import claim as claim_module
 from agency_os.linear.client import LinearError
 from agency_os.linear.models import Artifact
@@ -34,6 +35,16 @@ ENV = {
     "SPIL_FX_DATE": "2026-09-02",
     "SPIL_CLAIM_SETTLE_S": "0",
 }
+
+
+A_PULL_REQUEST = PullRequest(
+    repo="raderwerk/raderwerk-content", number=2,
+    url="https://github.com/raderwerk/raderwerk-content/pull/2", state="OPEN",
+    is_draft=False, merged=False, merged_by_login=None, merged_by_is_bot=None,
+    head_sha="2db955a1c0ffee00", checks_conclusion="success",
+    head_branch="feat/WV-207-publiek-bouwlogboek",
+)
+GREEN_CHECKS = ChecksSummary(verdict="geslaagd", total=3, passed=3)
 
 
 def a_result(**overrides) -> ExecutionResult:
@@ -291,6 +302,41 @@ class WriteBackTest(CycleTestCase):
                         if "Definition of Done" in c.body)
         self.assertIn("Geweigerd bewijs", run_body)
         self.assertIn("exfil.example", run_body)
+
+
+class EvidenceContextTest(CycleTestCase):
+    """`extra_context` bestond al; sinds deze cyclus vult iemand hem ook.
+
+    QA draait op de Claude-laan, heeft geen `gh` en kreeg het PR-nummer, de
+    CI-uitslag en de preview-URL nergens te zien.
+    """
+
+    def request_for(self, issue) -> object:
+        ctx = self.context(FakeClient(dispatcher_user_id=DISPATCHER))
+        route = decide(ctx.table, issue, allow_fable=False)
+        job = runs.Job(run_id="3f9a2c", issue=issue, route=route, claim=None,
+                       state=route.role.working_state)
+        return route, runs.request_for(ctx, job)
+
+    def test_the_qa_prompt_carries_the_pull_request_and_the_ci_status(self):
+        issue = make_issue(state_name="QA op preview")
+        with mock.patch.object(evidence, "find_pr_for_branch", return_value=A_PULL_REQUEST), \
+                mock.patch.object(evidence, "pr_checks", return_value=GREEN_CHECKS), \
+                mock.patch.object(evidence, "pages_site", return_value=None):
+            route, request = self.request_for(issue)
+
+        self.assertEqual("qa", route.role.key)
+        self.assertIn("## Bewijsmateriaal", request.prompt)
+        self.assertIn("PR #2", request.prompt)
+        self.assertIn("geslaagd, 3 van 3 checks groen", request.prompt)
+        self.assertIn(request.branch, request.prompt)
+
+    def test_a_making_role_never_pays_for_the_lookup(self):
+        with mock.patch.object(evidence, "find_pr_for_branch") as finder:
+            route, request = self.request_for(make_issue())
+        self.assertEqual("redacteur", route.role.key)
+        self.assertNotIn("Bewijsmateriaal", request.prompt)
+        finder.assert_not_called()
 
 
 class PullRequestEvidenceTest(CycleTestCase):
@@ -600,10 +646,12 @@ class KillSwitchTest(CycleTestCase):
         self.assertEqual(0, report.claimed)
         self.assertEqual([], self.names(client))
 
-    def test_the_loop_guard_pauses_the_issue_instead_of_running_it_twice(self):
+    def test_the_loop_guard_pauses_the_issue_after_three_runs_on_one_day(self):
         client = self.only(FakeClient(dispatcher_user_id=DISPATCHER), "WV-207")
         ctx = self.context(client)
-        ctx.store.bump_role_run(client.issue("WV-207").id, "redacteur", datetime.now(timezone.utc).date())
+        today = datetime.now(timezone.utc).date()
+        for _ in range(routing.MAX_ROLE_RUNS_PER_DAY):
+            ctx.store.bump_role_run(client.issue("WV-207").id, "redacteur", today)
 
         report = scheduler.run_cycle(ctx, 1)
 
@@ -611,6 +659,43 @@ class KillSwitchTest(CycleTestCase):
         issue = client.issue("WV-207")
         self.assertIn("lus-verdacht", issue.labels)
         self.assertIn("schakelaar/pauze", issue.labels)
+
+    def test_a_lane_that_never_started_costs_the_role_no_turn(self):
+        """De poging blijft in het spoor staan; de teller van de lusdetectie niet."""
+        client = self.only(FakeClient(dispatcher_user_id=DISPATCHER), "WV-207")
+        stalled = a_result(uitkomst="mislukt", pr_url=None, artifacts=(),
+                           error="geen RUNRESULT-blok (codex foutcode 2)", infra_failure=True)
+        ctx = self.context(client, executor=FakeExecutor(stalled))
+
+        report = scheduler.run_cycle(ctx, 1)
+
+        self.assertEqual(1, report.claimed)
+        issue_id = client.issue("WV-207").id
+        today = datetime.now(timezone.utc).date()
+        self.assertEqual(0, ctx.store.role_run_count(issue_id, "redacteur", today))
+        self.assertEqual(1, ctx.store.role_run_attempts(issue_id, "redacteur", today))
+
+    def test_a_run_that_really_failed_does_cost_a_turn(self):
+        client = self.only(FakeClient(dispatcher_user_id=DISPATCHER), "WV-207")
+        ctx = self.context(client, executor=FakeExecutor(
+            a_result(uitkomst="mislukt", pr_url=None, artifacts=(), error="de rol gaf het op")))
+
+        scheduler.run_cycle(ctx, 1)
+
+        today = datetime.now(timezone.utc).date()
+        self.assertEqual(1, ctx.store.role_run_count(client.issue("WV-207").id, "redacteur", today))
+
+    def test_a_second_run_on_the_same_day_is_simply_allowed(self):
+        """Zonder deze ruimte past een review-en-herstelronde niet in één dag."""
+        client = self.only(FakeClient(dispatcher_user_id=DISPATCHER), "WV-207")
+        ctx = self.context(client)
+        ctx.store.bump_role_run(client.issue("WV-207").id, "redacteur",
+                                datetime.now(timezone.utc).date())
+
+        report = scheduler.run_cycle(ctx, 1)
+
+        self.assertEqual(1, report.claimed)
+        self.assertNotIn("lus-verdacht", client.issue("WV-207").labels)
 
 
 if __name__ == "__main__":

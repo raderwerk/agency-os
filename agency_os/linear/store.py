@@ -21,7 +21,14 @@ from .models import Artifact, MutationRecord, RunRecord
 
 __all__ = ["Store", "iso", "parse_iso"]
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
+
+#: Zoveel echte runs van dezelfde rol op hetzelfde issue laat één dag toe
+#: (spec 8.6). Staat hier omdat `loops_on` hem nodig heeft; de lusdetectie zelf
+#: leest hem uit `app.routing.MAX_ROLE_RUNS_PER_DAY`, en een test bewaakt dat de
+#: twee getallen niet uit elkaar lopen -- `app` mag niet uit `linear` importeren
+#: en andersom al helemaal niet.
+LOOP_LIMIT = 3
 
 _MIGRATION_1 = """
 CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
@@ -104,6 +111,15 @@ _MIGRATION_2 = (
     ("sessions", "state", "ALTER TABLE sessions ADD COLUMN state TEXT"),
 )
 
+# Migratie 3: de lusdetectie telt rolpogingen, en een poging waarbij de laan
+# zelf niet startte is geen poging van de rol. `count` blijft alles wat er
+# geclaimd is, `infra` is het deel daarvan dat nooit bij een model aankwam; het
+# verschil is wat de lusdetectie ziet. Aftrekken van `count` zou goedkoper zijn
+# en zou het spoor uitwissen dat er wél iets geprobeerd is.
+_MIGRATION_3 = (
+    ("role_runs", "infra", "ALTER TABLE role_runs ADD COLUMN infra INTEGER NOT NULL DEFAULT 0"),
+)
+
 
 def iso(moment: Optional[datetime]) -> Optional[str]:
     """Tijdzonebewuste UTC -> ISO-8601 met Z. None blijft None."""
@@ -137,7 +153,7 @@ class Store:
     def migrate(self) -> None:
         """Vooruit-genummerde migraties; nooit terug."""
         self.conn.executescript(_MIGRATION_1)
-        for table, column, statement in _MIGRATION_2:
+        for table, column, statement in (*_MIGRATION_2, *_MIGRATION_3):
             if column not in self._columns(table):
                 self.conn.execute(statement)
         self.set_meta("schema_version", str(SCHEMA_VERSION))
@@ -375,6 +391,7 @@ class Store:
     # ---------------- loop detection ----------------
 
     def bump_role_run(self, issue_id: str, role: str, day: date) -> int:
+        """Boek een claim van deze rol op deze dag. Geeft het aantal échte runs terug."""
         self.conn.execute(
             "INSERT INTO role_runs(issue_id, role, day, count) VALUES(?,?,?,1) "
             "ON CONFLICT(issue_id, role, day) DO UPDATE SET count = count + 1",
@@ -382,17 +399,44 @@ class Store:
         )
         return self.role_run_count(issue_id, role, day)
 
+    def discount_role_run(self, issue_id: str, role: str, day: date) -> int:
+        """Streep de zojuist geboekte poging weg: de laan startte niet.
+
+        Een run die afketste op een vlag die de CLI niet kent, een zandbak die
+        weigert of een binair dat er niet is, heeft geen rolpoging opgeleverd --
+        er is geen model aan te pas gekomen en er is dus niets waar de rol in
+        vast kan lopen. Zo'n poging mag de dagbeurten van de rol niet opeten.
+        Het claimspoor in `count` blijft staan, want er is wel geld en tijd aan
+        opgegaan; alleen de teller die de lusdetectie leest schuift niet op.
+        """
+        self.conn.execute(
+            "UPDATE role_runs SET infra = min(infra + 1, count) "
+            "WHERE issue_id = ? AND role = ? AND day = ?",
+            (issue_id, role, day.isoformat()),
+        )
+        return self.role_run_count(issue_id, role, day)
+
     def role_run_count(self, issue_id: str, role: str, day: date) -> int:
+        """Het aantal runs waarin deze rol vandaag echt aan het werk is geweest."""
+        row = self.conn.execute(
+            "SELECT count - infra AS echt FROM role_runs "
+            "WHERE issue_id = ? AND role = ? AND day = ?",
+            (issue_id, role, day.isoformat()),
+        ).fetchone()
+        return max(0, int(row["echt"])) if row else 0
+
+    def role_run_attempts(self, issue_id: str, role: str, day: date) -> int:
+        """Alles wat er geclaimd is, inclusief de runs die nooit bij een model aankwamen."""
         row = self.conn.execute(
             "SELECT count FROM role_runs WHERE issue_id = ? AND role = ? AND day = ?",
             (issue_id, role, day.isoformat()),
         ).fetchone()
         return int(row["count"]) if row else 0
 
-    def loops_on(self, day: date) -> int:
+    def loops_on(self, day: date, limit: int = LOOP_LIMIT) -> int:
         row = self.conn.execute(
-            "SELECT COUNT(*) AS n FROM role_runs WHERE day = ? AND count >= 2",
-            (day.isoformat(),),
+            "SELECT COUNT(*) AS n FROM role_runs WHERE day = ? AND count - infra >= ?",
+            (day.isoformat(), int(limit)),
         ).fetchone()
         return int(row["n"])
 

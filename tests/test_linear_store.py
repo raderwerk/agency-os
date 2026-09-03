@@ -97,8 +97,33 @@ class CounterTests(unittest.TestCase):
         self.assertEqual(self.store.role_run_count("issue-207", "redacteur", day), 0)
         self.assertEqual(self.store.bump_role_run("issue-207", "redacteur", day), 1)
         self.assertEqual(self.store.bump_role_run("issue-207", "redacteur", day), 2)
+        self.assertEqual(self.store.bump_role_run("issue-207", "redacteur", day), 3)
         self.assertEqual(self.store.bump_role_run("issue-207", "reviewer", day), 1)
         self.assertEqual(self.store.loops_on(day), 1)
+
+    def test_a_lane_that_never_started_is_struck_from_the_count(self):
+        """De poging blijft in het spoor staan, de teller van de lusdetectie niet."""
+        day = date(2026, 9, 3)
+        self.store.bump_role_run("issue-210", "reviewer", day)
+        self.store.bump_role_run("issue-210", "reviewer", day)
+        self.assertEqual(self.store.discount_role_run("issue-210", "reviewer", day), 1)
+        self.assertEqual(self.store.role_run_count("issue-210", "reviewer", day), 1)
+        self.assertEqual(self.store.role_run_attempts("issue-210", "reviewer", day), 2)
+
+    def test_discounting_never_goes_below_zero(self):
+        day = date(2026, 9, 3)
+        self.store.bump_role_run("issue-210", "qa", day)
+        self.store.discount_role_run("issue-210", "qa", day)
+        self.store.discount_role_run("issue-210", "qa", day)
+        self.assertEqual(self.store.role_run_count("issue-210", "qa", day), 0)
+        self.assertEqual(self.store.role_run_attempts("issue-210", "qa", day), 1)
+
+    def test_a_day_of_stalled_lanes_is_not_a_loop(self):
+        day = date(2026, 9, 3)
+        for _ in range(3):
+            self.store.bump_role_run("issue-210", "reviewer", day)
+            self.store.discount_role_run("issue-210", "reviewer", day)
+        self.assertEqual(self.store.loops_on(day), 0)
 
     def test_a_session_row_is_upserted(self):
         self.store.upsert_session(issue_id="issue-207", run_id="3f9a2c", executor="native-codex",

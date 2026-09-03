@@ -12,6 +12,7 @@ from tests.fakes import make_issue, temp_store
 
 from agency_os.app import routing
 from agency_os.app.routing import Refusal, Route, RoutingError, decide, load_table, loop_guard, resolve
+from agency_os.linear import store as store_module
 
 TABLE = load_table()
 
@@ -174,19 +175,54 @@ class ReviewerFamilyTest(unittest.TestCase):
 
 
 class LoopGuardTest(unittest.TestCase):
-    def test_second_run_of_the_same_role_on_one_day_is_refused(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            store = temp_store(tmp)
-            issue = make_issue()
-            day = date(2026, 9, 3)
-            self.assertIsNone(loop_guard(store, issue, "redacteur", day))
+    """Spec 8.6: drie runs van dezelfde rol op één issue per dag, niet één."""
 
-            store.bump_role_run(issue.id, "redacteur", day)
-            reason = loop_guard(store, issue, "redacteur", day)
-            self.assertIsNotNone(reason)
-            self.assertIn("redacteur", reason)
-            self.assertIsNone(loop_guard(store, issue, "reviewer", day), "andere rol mag nog wel")
-            self.assertIsNone(loop_guard(store, issue, "redacteur", date(2026, 9, 4)), "morgen mag weer")
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.store = temp_store(tmp.name)
+        self.issue = make_issue()
+        self.day = date(2026, 9, 3)
+
+    def test_the_fourth_run_of_the_same_role_on_one_day_is_refused(self):
+        for _ in range(routing.MAX_ROLE_RUNS_PER_DAY):
+            self.assertIsNone(loop_guard(self.store, self.issue, "redacteur", self.day))
+            self.store.bump_role_run(self.issue.id, "redacteur", self.day)
+
+        reason = loop_guard(self.store, self.issue, "redacteur", self.day)
+        self.assertIsNotNone(reason)
+        self.assertIn("redacteur", reason)
+        self.assertIn("3x", reason)
+        self.assertIsNone(loop_guard(self.store, self.issue, "reviewer", self.day),
+                          "andere rol mag nog wel")
+        self.assertIsNone(loop_guard(self.store, self.issue, "redacteur", date(2026, 9, 4)),
+                          "morgen mag weer")
+
+    def test_a_repair_round_fits_inside_one_day(self):
+        """Bouwen, afgekeurd worden, herstellen: de lus die op 2026-09-03 niet paste."""
+        for role in ("ontwikkelaar", "reviewer", "ontwikkelaar", "reviewer"):
+            self.assertIsNone(loop_guard(self.store, self.issue, role, self.day), role)
+            self.store.bump_role_run(self.issue.id, role, self.day)
+
+    def test_a_lane_that_never_started_does_not_eat_a_turn(self):
+        for _ in range(5):
+            self.store.bump_role_run(self.issue.id, "reviewer", self.day)
+            self.store.discount_role_run(self.issue.id, "reviewer", self.day)
+        self.assertIsNone(loop_guard(self.store, self.issue, "reviewer", self.day))
+
+    def test_the_refusal_names_the_attempts_that_never_started(self):
+        for _ in range(routing.MAX_ROLE_RUNS_PER_DAY):
+            self.store.bump_role_run(self.issue.id, "qa", self.day)
+        self.store.bump_role_run(self.issue.id, "qa", self.day)
+        self.store.discount_role_run(self.issue.id, "qa", self.day)
+
+        reason = loop_guard(self.store, self.issue, "qa", self.day)
+        self.assertIn("3x", reason)
+        self.assertIn("1 poging(en) die niet startten", reason)
+
+    def test_the_store_reports_loops_at_the_same_threshold(self):
+        """Twee getallen op twee lagen; ze mogen niet uit elkaar lopen."""
+        self.assertEqual(routing.MAX_ROLE_RUNS_PER_DAY, store_module.LOOP_LIMIT)
 
 
 if __name__ == "__main__":

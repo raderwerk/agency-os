@@ -10,8 +10,10 @@ Deze module importeert niets uit `agency_os.linear` of `agency_os.executors`:
 het issue wordt via zijn eigen afgeleide eigenschappen bevraagd
 (`label_in_group`, `estimate`, `repo`), zodat de tabel testbaar is zonder client.
 
-Van de Store gebruikt `loop_guard` precies één methode:
-`role_run_count(issue_id, role, day) -> int` (tabel `role_runs` uit spec 5.1).
+Van de Store gebruikt `loop_guard` precies twee methodes, allebei op de tabel
+`role_runs` uit spec 5.1: `role_run_count(issue_id, role, day) -> int` voor de
+runs die echt gedraaid hebben, en `role_run_attempts(...)` voor alles wat er
+geclaimd is. Het verschil zijn de runs waarbij de laan niet startte.
 """
 
 from __future__ import annotations
@@ -58,6 +60,12 @@ MODELS: Mapping[str, ModelSpec] = {
 NATIVE_MODELS = frozenset({"codex", "cursor"})
 XL_ESTIMATE = 5
 
+#: Zoveel échte runs van dezelfde rol op hetzelfde issue laat spec 8.6 op één
+#: dag toe. `linear.store.LOOP_LIMIT` draagt hetzelfde getal voor de
+#: dagrapportage; de afhankelijkheid loopt maar één kant op, dus staat het er
+#: twee keer en bewaakt een test dat ze gelijk blijven.
+MAX_ROLE_RUNS_PER_DAY = 3
+
 
 @dataclass(frozen=True)
 class RoleSpec:
@@ -77,6 +85,11 @@ class RoleSpec:
     #: voor de rollen die het werk máken, onwaar voor de rollen die het
     #: beoordelen. Zie `decide` voor waarom dat verschil moet bestaan.
     model_from_label: bool = True
+    #: Krijgt deze rol het bewijsblok in zijn prompt: pull request, CI-uitslag,
+    #: preview-URL, branch en HEAD, en wie er al geoordeeld heeft? Waar voor de
+    #: rollen die beoordelen; die vinken criteria af die over artefacten gaan en
+    #: hebben zelf geen `gh`. Zie `app.evidence`.
+    needs_evidence: bool = False
 
     @property
     def prompt_path(self) -> Path:
@@ -169,6 +182,7 @@ def load_table(path: Path | str = ROUTING_TABLE_PATH) -> RoutingTable:
                 needs_worktree=bool(spec["needs_worktree"]),
                 needs_pr=bool(spec["needs_pr"]),
                 model_from_label=bool(spec.get("model_from_label", True)),
+                needs_evidence=bool(spec.get("needs_evidence", False)),
             )
         except KeyError as exc:
             raise RoutingError(f"rol {key!r} mist veld {exc.args[0]!r}") from exc
@@ -251,15 +265,28 @@ def resolve(table: RoutingTable, issue: Any, *, allow_fable: bool) -> Optional[R
 
 
 def loop_guard(store: Any, issue: Any, role_key: str, day: date) -> Optional[str]:
-    """Een reden om te stoppen als deze rol vandaag al op dit issue draaide.
+    """Een reden om te stoppen als deze rol zijn beurten van vandaag op heeft.
 
-    Strenger dan spec 8.6 (drie per dag): de tweede run van dezelfde rol op
-    hetzelfde issue op één dag wordt geweigerd. Zie architectuur sectie 18.1.
+    Spec 8.6: drie runs van dezelfde rol op hetzelfde issue op één dag is de
+    grens. Bij de vierde weigert de Spil, en dan gaat het label `lus-verdacht`
+    van spec 3.6 erop -- "dezelfde rol draaide vandaag drie keer op dit issue".
+
+    Alleen échte runs tellen mee. Een poging waarbij de laan zelf niet startte
+    (een vlag die de CLI niet kent, een zandbak die weigert, een binair dat er
+    niet is) is door `discount_role_run` alweer weggestreept: daar is geen model
+    aan te pas gekomen, dus er is niets waarin de rol vast kan lopen. Precies
+    dat onderscheid ontbrak op 2026-09-03, toen één reviewerrun die op een
+    ontbrekende vlag strandde WV-210 de rest van de dag kostte.
+
+    Drie is ook het minimum waarmee de gewone lus binnen één dag rond komt:
+    bouwen, afgekeurd worden, herstellen.
     """
     count = int(store.role_run_count(issue.id, role_key, day))
-    if count < 1:
+    if count < MAX_ROLE_RUNS_PER_DAY:
         return None
+    attempts = int(store.role_run_attempts(issue.id, role_key, day))
+    extra = f", en {attempts - count} poging(en) die niet startten" if attempts > count else ""
     return (
-        f"lusdetectie: rol {role_key} draaide vandaag al {count}x op {issue.identifier}; "
-        "een tweede run op dezelfde dag wordt geweigerd"
+        f"lusdetectie: rol {role_key} draaide vandaag al {count}x op {issue.identifier}{extra}; "
+        f"spec 8.6 laat er {MAX_ROLE_RUNS_PER_DAY} per dag toe"
     )

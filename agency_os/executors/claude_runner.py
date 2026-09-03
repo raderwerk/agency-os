@@ -44,7 +44,7 @@ from agency_os.executors.worktree import (
     repo_dir,
 )
 
-__all__ = ["ClaudeRunner", "RunResult", "parse_claude_json", "parse_runresult"]
+__all__ = ["ClaudeRunner", "RunResult", "executor_stalled", "parse_claude_json", "parse_runresult"]
 
 SKIP_PERMISSIONS = "--dangerously-skip-permissions"
 
@@ -67,6 +67,24 @@ _RUNRESULT_BLOCK = re.compile(
 )
 
 NO_RUNRESULT = "geen RUNRESULT-blok"
+
+
+def executor_stalled(run_result: "RunResult", proc: ProcessResult) -> bool:
+    """Kwam de laan zelf niet van de grond, in plaats van dat het model faalde?
+
+    Twee dingen tegelijk: een foutcode van het commando én geen RUNRESULT-blok.
+    Dat is de vorm van `error: unexpected argument '--search' found` (afloopcode
+    2), van een zandbak die weigert, en van een binair dat halverwege omvalt.
+    Er is dan niets beoordeeld en niets geschreven, dus telt die poging niet mee
+    voor de lusdetectie.
+
+    Een model dat wél draaide en een blok teruggaf telt altijd mee, ook als zijn
+    uitkomst `mislukt` is: dat is een echt oordeel van de rol. Een model dat
+    draaide, foutloos afsloot en tóch geen blok gaf telt ook mee -- daar valt
+    niets aan te repareren buiten het model om, en anders kan dezelfde rol
+    eindeloos proza blijven produceren zonder ooit zijn beurten op te maken.
+    """
+    return run_result.error == NO_RUNRESULT and not proc.ok
 
 
 def parse_runresult(result_text: str) -> dict:
@@ -273,6 +291,7 @@ class ClaudeRunner:
         result_text, usage, session_id = parse_claude_json(proc.stdout)
         usage = with_duration(usage, proc.duration_s)
         run_result = RunResult.from_dict(parse_runresult(result_text))
+        stalled = executor_stalled(run_result, proc)
         error = self._error_for(run_result, proc)
 
         pr_url = run_result.pr_url
@@ -298,6 +317,7 @@ class ClaudeRunner:
             ended_at=utcnow(),
             session_id=session_id,
             raw_log_path=raw_log,
+            infra_failure=stalled,
         )
 
     # -- stappen -----------------------------------------------------------
