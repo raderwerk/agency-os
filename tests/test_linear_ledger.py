@@ -138,8 +138,8 @@ class RollupTests(unittest.TestCase):
 
     def test_loops_and_issue_count_come_from_the_store(self):
         self.store.set_meta("issue_count", "212")
-        self.store.bump_role_run("issue-207", "redacteur", DAY)
-        self.store.bump_role_run("issue-207", "redacteur", DAY)
+        for _ in range(3):
+            self.store.bump_role_run("issue-207", "redacteur", DAY)
         day = ledger.rollup(self.store, DAY)
         self.assertEqual(day.issue_count, 212)
         self.assertEqual(day.loops, 1)

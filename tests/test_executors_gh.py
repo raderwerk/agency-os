@@ -164,6 +164,73 @@ class DiffTests(GhTestCase):
         self.assertEqual(pr_diff(self.cfg, REPO, 7), "diff --git a/x b/x\n")
 
 
+class PrChecksTests(GhTestCase):
+    """`gh pr checks` is de CI-uitslag die QA in zijn prompt krijgt."""
+
+    def patch_checks(self, payload: str, *, returncode: int = 0):
+        def fake(cmd, **kwargs):
+            self.calls.append(list(cmd))
+            return make_process(payload, returncode=returncode)
+
+        patcher = mock.patch.object(gh, "run_process", side_effect=fake)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def test_all_green(self):
+        self.patch_checks(json.dumps([{"bucket": "pass", "name": "test"},
+                                      {"bucket": "pass", "name": "lint"}]))
+        summary = gh.pr_checks(self.cfg, REPO, 7)
+        self.assertEqual(summary.verdict, "geslaagd")
+        self.assertEqual((summary.total, summary.passed), (2, 2))
+        self.assertEqual(str(summary), "geslaagd, 2 van 2 checks groen")
+
+    def test_a_red_check_wins_and_is_named_even_with_a_nonzero_exit_code(self):
+        """`gh pr checks` sluit af met 1 bij rood en 8 bij lopend; de json komt wél."""
+        self.patch_checks(json.dumps([{"bucket": "pass", "name": "lint"},
+                                      {"bucket": "fail", "name": "test"}]), returncode=1)
+        summary = gh.pr_checks(self.cfg, REPO, 7)
+        self.assertEqual(summary.verdict, "mislukt")
+        self.assertEqual(summary.failing, ("test",))
+        self.assertIn("rood: test", str(summary))
+
+    def test_a_running_check_is_pending(self):
+        self.patch_checks(json.dumps([{"bucket": "pass", "name": "lint"},
+                                      {"bucket": "pending", "name": "test"}]), returncode=8)
+        self.assertEqual(gh.pr_checks(self.cfg, REPO, 7).verdict, "loopt nog")
+
+    def test_without_checks_there_is_nothing_to_report(self):
+        self.patch_checks("[]", returncode=1)
+        self.assertEqual(gh.pr_checks(self.cfg, REPO, 7).verdict, "geen checks")
+
+    def test_unreadable_output_is_never_mistaken_for_green(self):
+        self.patch_checks("gh: kon niet inloggen", returncode=1)
+        self.assertEqual(gh.pr_checks(self.cfg, REPO, 7).verdict, "niet op te halen")
+
+
+class PagesTests(GhTestCase):
+    def test_a_published_site_carries_its_branch(self):
+        self.patch_gh(json.dumps({"html_url": "https://raderwerk.github.io/kantelbeer-site/",
+                                  "source": {"branch": "main", "path": "/"}}))
+        site = gh.pages_site(self.cfg, "raderwerk/kantelbeer-site")
+        self.assertEqual(site.url, "https://raderwerk.github.io/kantelbeer-site/")
+        self.assertEqual(site.branch, "main")
+
+    def test_a_site_published_by_a_workflow_has_no_branch(self):
+        self.patch_gh(json.dumps({"html_url": "https://raderwerk.github.io/x/",
+                                  "build_type": "workflow"}))
+        self.assertIsNone(gh.pages_site(self.cfg, "raderwerk/x").branch)
+
+    def test_a_repository_without_pages_is_none_and_not_a_crash(self):
+        def fake(cmd, **kwargs):
+            self.calls.append(list(cmd))
+            return make_process('{"message":"Not Found","status":"404"}', returncode=1)
+
+        patcher = mock.patch.object(gh, "run_process", side_effect=fake)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.assertIsNone(gh.pages_site(self.cfg, REPO))
+
+
 class NoMergeTests(unittest.TestCase):
     """Mergen is mensenwerk. Dat is hier een ontbrekende tak, geen belofte."""
 

@@ -195,6 +195,12 @@ class ExecutionResult:
     ended_at: datetime
     session_id: Optional[str]
     raw_log_path: Optional[Path]
+    #: De laan zelf kwam niet van de grond: geen werkmap, geen binair, een vlag
+    #: die de CLI niet kent, een zandbak die weigert, een sessie die nooit
+    #: startte. Er is dan geen model aan te pas gekomen en dus ook geen poging
+    #: van de rol om te tellen. C streept zo'n run weg bij de lusdetectie; het
+    #: Kostenboek houdt hem wel, want er ging tijd in zitten.
+    infra_failure: bool = False
 
 
 @dataclass(frozen=True)
@@ -307,8 +313,14 @@ def failed(
     uitkomst: str = "mislukt",
     usage: Optional[Usage] = None,
     branch: Optional[str] = None,
+    infra_failure: bool = True,
 ) -> ExecutionResult:
-    """Eén plek waar een mislukte of afgebroken run zijn vorm krijgt."""
+    """Eén plek waar een mislukte of afgebroken run zijn vorm krijgt.
+
+    `infra_failure` staat hier standaard aan: elke aanroep van deze functie is
+    een laan die niet van de grond kwam. Draaide het model wél en kwam er alleen
+    niets bruikbaars uit, dan bouwt de aanroeper zijn eigen `ExecutionResult`.
+    """
     return ExecutionResult(
         run_id=req.run_id,
         uitkomst=uitkomst,
@@ -324,19 +336,25 @@ def failed(
         ended_at=utcnow(),
         session_id=None,
         raw_log_path=None,
+        infra_failure=infra_failure,
     )
 
 
 def aborted(
     req: ExecutionRequest, started_at: datetime, proc: "ProcessResult", *, source: str = "unknown"
 ) -> ExecutionResult:
-    """De tijdslimiet verliep en de procesgroep is afgeschoten."""
+    """De tijdslimiet verliep en de procesgroep is afgeschoten.
+
+    Geen infrastructuurstoring: het model draaide, het draaide alleen te lang.
+    Die run heeft echte beurten gekost en telt dus mee voor de lusdetectie.
+    """
     return failed(
         req,
         started_at,
         f"tijdslimiet van {req.timeout_s}s overschreden; procesgroep afgeschoten",
         uitkomst="afgebroken",
         usage=Usage(duration_s=proc.duration_s, source=source, metered=False),
+        infra_failure=False,
     )
 
 

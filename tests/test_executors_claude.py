@@ -153,6 +153,41 @@ class RunTests(ClaudeRunnerTestCase):
         self.assertEqual(result.error, "geen RUNRESULT-blok")
 
 
+class StalledLaneTests(ClaudeRunnerTestCase):
+    """Wat telt als "de laan startte niet", en wat als een echt oordeel van de rol.
+
+    De lusdetectie hangt hieraan: drie echte runs van dezelfde rol op één dag
+    pauzeren het issue, en een vlag die de CLI niet kent hoort daar niet in mee
+    te tellen. Zie `app.routing.loop_guard`.
+    """
+
+    def test_a_missing_block_after_an_error_code_is_the_lane_and_not_the_role(self):
+        self.patch_run(stdout="", returncode=2)
+        self.assertTrue(ClaudeRunner(self.cfg).run(make_request()).infra_failure)
+
+    def test_a_missing_block_after_a_clean_exit_is_the_role(self):
+        self.patch_run(stdout=claude_stdout(result="Klaar hoor, alles gedaan."))
+        result = ClaudeRunner(self.cfg).run(make_request())
+        self.assertEqual(result.uitkomst, "mislukt")
+        self.assertFalse(result.infra_failure, "het model draaide en gaf proza terug")
+
+    def test_a_finished_run_is_never_an_infrastructure_failure(self):
+        self.patch_run(stdout=claude_stdout())
+        self.assertFalse(ClaudeRunner(self.cfg).run(make_request()).infra_failure)
+
+    def test_a_timeout_costs_a_real_turn(self):
+        """Het model draaide, het draaide alleen te lang. Dat is geen storing."""
+        self.patch_run(timed_out=True)
+        result = ClaudeRunner(self.cfg).run(make_request(timeout_s=1))
+        self.assertEqual(result.uitkomst, "afgebroken")
+        self.assertFalse(result.infra_failure)
+
+    def test_a_lane_that_could_not_be_set_up_is_an_infrastructure_failure(self):
+        self.patch_run(stdout=claude_stdout())
+        result = ClaudeRunner(self.cfg).run(make_request(needs_worktree=True, repo=None))
+        self.assertTrue(result.infra_failure)
+
+
 class PermissionFlagTests(ClaudeRunnerTestCase):
     """De gevaarlijke vlag mag alleen in de gecontroleerde werkmap."""
 

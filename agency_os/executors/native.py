@@ -273,6 +273,10 @@ class NativeExecutor:
             ended_at=self.now(),
             session_id=receipt.session_id,
             raw_log_path=None,
+            # De sessie is nooit aan het werk gegaan: "failed to start" zonder
+            # cloudomgeving, of eeuwig `awaitingInput`. Geen model, dus geen
+            # poging van de rol die de lusdetectie mag opeten.
+            infra_failure=True,
         )
 
     @staticmethod

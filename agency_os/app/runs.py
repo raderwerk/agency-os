@@ -17,7 +17,7 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, replace
 from typing import Any, Callable, Optional
 
-from agency_os.app import prompts
+from agency_os.app import evidence, prompts
 from agency_os.app.routing import Route
 from agency_os.executors import base as executors
 from agency_os.executors import cost, worktree
@@ -89,6 +89,9 @@ def run_one(ctx: Any, job: Job) -> Any:
             ended_at=ctx.now(),
             session_id=None,
             raw_log_path=None,
+            # Een uitzondering uit de laan zelf: er is geen model aan te pas
+            # gekomen, dus dit is geen poging van de rol.
+            infra_failure=True,
         )
 
 
@@ -244,6 +247,7 @@ def request_for(ctx: Any, job: Job) -> Any:
     contract = getattr(issue, "contract", None)
     base_branch = getattr(contract, "basisbranch", None) or "main"
     branch = worktree.branch_name(issue.identifier, issue.title) if role.needs_worktree else ""
+    discussion = _discussion(ctx, issue)
     return executors.ExecutionRequest(
         run_id=job.run_id,
         issue=issue,
@@ -252,9 +256,12 @@ def request_for(ctx: Any, job: Job) -> Any:
         model_key=job.route.model_key,
         model_display=job.route.model.display,
         model_ledger=job.route.model.ledger,
-        prompt=prompts.build_prompt(ctx.cfg, role, issue, run_id=job.run_id,
-                                    branch=branch, base_branch=base_branch,
-                                    discussion=_discussion(ctx, issue)),
+        prompt=prompts.build_prompt(
+            ctx.cfg, role, issue, run_id=job.run_id,
+            branch=branch, base_branch=base_branch, discussion=discussion,
+            extra_context=evidence.for_role(ctx.cfg.executors, role, issue,
+                                            branch=branch, discussion=discussion),
+        ),
         repo=issue.repo,
         base_branch=base_branch,
         branch=branch,
@@ -301,6 +308,7 @@ def finish(ctx: Any, job: Job, result: Any) -> None:
     # kosten uit het boek laten verdwijnen -- in een project waarvan de stelling
     # een eerlijk boek is.
     ledger.record_run(ctx.store, run)
+    _discount_if_stalled(ctx, job, result)
     if refused:
         ctx.logbook.write("run", run_id=job.run_id, issue=issue.identifier,
                           payload={"geweigerd_bewijs": [a.url for a in refused]})
@@ -349,6 +357,23 @@ def finish(ctx: Any, job: Job, result: Any) -> None:
         issue=issue.identifier,
         payload={"uitkomst": result.uitkomst, "volgende_status": target, "kosten_eur": run.kosten_eur},
     )
+
+
+def _discount_if_stalled(ctx: Any, job: Job, result: Any) -> None:
+    """Een laan die niet startte kost de rol geen dagbeurt.
+
+    `_claim` boekt de poging vóór de run, want een proces dat halverwege omvalt
+    moet zijn beurt kwijt zijn. Pas hier is te zien of er ook echt iets gedraaid
+    heeft. De dag is die van de start, niet die van nu: een native sessie kan
+    over middernacht heen lopen en zou anders de beurt van morgen wegstrepen.
+    """
+    if not getattr(result, "infra_failure", False):
+        return
+    day = (result.started_at or ctx.now()).date()
+    left = ctx.store.discount_role_run(job.issue.id, job.route.role.key, day)
+    ctx.logbook.write("run", run_id=job.run_id, issue=job.issue.identifier,
+                      payload={"lusdetectie_niet_geteld": result.error or "de laan startte niet",
+                               "echte_runs_vandaag": left})
 
 
 def _attach(ctx: Any, job: Job, artifacts: Any) -> None:

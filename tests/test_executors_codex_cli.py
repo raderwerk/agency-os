@@ -57,10 +57,11 @@ class ReviewerTests(unittest.TestCase):
         self.cfg = fake_config(Path(self.tmp.name))
         self.calls: list[dict] = []
 
-    def patch(self, *, pull_request=PULL_REQUEST, stdout=REVIEW, timed_out=False):
+    def patch(self, *, pull_request=PULL_REQUEST, stdout=REVIEW, timed_out=False,
+              returncode=0, stderr=""):
         def fake_run(cmd, **kwargs):
             self.calls.append({"cmd": list(cmd), **kwargs})
-            return make_process(stdout, timed_out=timed_out)
+            return make_process(stdout, timed_out=timed_out, returncode=returncode, stderr=stderr)
 
         patchers = [
             mock.patch.object(codex_cli, "run_process", side_effect=fake_run),
@@ -130,6 +131,28 @@ class ReviewerTests(unittest.TestCase):
         result = CodexCliReviewer(self.cfg).run(make_request())
         self.assertEqual(result.uitkomst, "mislukt")
         self.assertIn("geen RUNRESULT-blok", result.error)
+        self.assertFalse(result.infra_failure, "codex draaide en gaf proza terug")
+
+    def test_an_unknown_flag_is_the_lane_and_costs_the_role_no_turn(self):
+        """`error: unexpected argument '--search' found`, afloopcode 2.
+
+        Precies de vorm waarop de reviewer op 2026-09-03 strandde. Daar is geen
+        model aan te pas gekomen, dus die poging hoort niet mee te tellen voor
+        de lusdetectie.
+        """
+        self.patch(stdout="", returncode=2, stderr="error: unexpected argument '--search' found")
+        result = CodexCliReviewer(self.cfg).run(make_request())
+        self.assertEqual(result.uitkomst, "mislukt")
+        self.assertTrue(result.infra_failure)
+        self.assertIn("codex foutcode 2", result.error)
+
+    def test_a_finished_review_is_never_an_infrastructure_failure(self):
+        self.patch()
+        self.assertFalse(CodexCliReviewer(self.cfg).run(make_request()).infra_failure)
+
+    def test_a_round_without_a_pull_request_is_an_infrastructure_failure(self):
+        self.patch(pull_request=None)
+        self.assertTrue(CodexCliReviewer(self.cfg).run(make_request()).infra_failure)
 
     def test_a_timeout_becomes_afgebroken(self):
         self.patch(timed_out=True)

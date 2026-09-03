@@ -26,7 +26,7 @@ from agency_os.executors.base import (
     utcnow,
     with_duration,
 )
-from agency_os.executors.claude_runner import RunResult, parse_runresult
+from agency_os.executors.claude_runner import RunResult, executor_stalled, parse_runresult
 from agency_os.executors.process import model_env, run_process, write_raw_log
 from agency_os.executors.gh import find_pr_for_branch, pr_diff
 from agency_os.executors.worktree import (
@@ -116,6 +116,9 @@ class CodexCliReviewer:
             return aborted(req, started_at, proc, source="codex-cli")
 
         run_result = RunResult.from_dict(parse_runresult(proc.stdout))
+        # Vóór de foutcode aan de tekst geplakt wordt: `executor_stalled` kijkt
+        # naar de kale reden, niet naar de aangevulde.
+        stalled = executor_stalled(run_result, proc)
         if run_result.uitkomst == "mislukt" and proc.returncode != 0:
             run_result = replace(
                 run_result,
@@ -139,6 +142,7 @@ class CodexCliReviewer:
             ended_at=utcnow(),
             session_id=None,
             raw_log_path=write_raw_log(self.cfg, req.run_id, proc.stdout, proc.stderr),
+            infra_failure=stalled,
         )
 
     # -- onderdelen --------------------------------------------------------
