@@ -27,6 +27,24 @@ Geen installatiestap nodig: alles staat in de standaardbibliotheek. Dit zijn ook
 
 ## De Spil draaien
 
+Eerst een `~/.config/raderwerk/spil.env`. Zes sleutels hebben geen standaardwaarde en zonder een daarvan start de Spil niet; hij zegt dan welke ontbreekt en stopt met afloopcode `2`.
+
+```bash
+mkdir -p ~/.config/raderwerk && chmod 700 ~/.config/raderwerk
+cat > ~/.config/raderwerk/spil.env <<'EOF'
+SPIL_LINEAR_API_KEY=lin_api_...
+SPIL_DISPATCHER_USER_ID=<uuid van het account waarmee de Spil schrijft>
+SPIL_APPROVER_IDS=<uuid>,<uuid>
+SPIL_FX_USD_EUR=0.92
+SPIL_FX_SOURCE=ECB
+SPIL_FX_DATE=2026-09-01
+SPIL_REPO_ROOT=~/Developer/Personal/Raderwerk
+EOF
+chmod 600 ~/.config/raderwerk/spil.env
+```
+
+De uuids haal je uit de workspace zelf: `viewer { id }` is de dispatcher, en de goedkeurders zijn de mensen uit D02. Draaien de Spil en de goedkeurder onder hetzelfde account, dan kan de Spil zijn eigen poort niet openen -- dat is de bedoeling, maar het betekent ook dat het akkoord-kanaal pas te demonstreren is met een eigen sleutel voor de dispatcher.
+
 ```bash
 python -m agency_os status [--json]                 # herkomst van de config, hartslag, issueteller, uitvoerders
 python -m agency_os dry-run [--issue WV-207]        # volledige cyclus, geen enkele schrijfactie
@@ -38,7 +56,23 @@ python -m agency_os ledger [--since D] [--format markdown|json] [--logbook]
 
 Afloopcodes: `0` in orde, `1` ongezond of geweigerd, `2` configuratiefout, `130` onderbroken. De wachthond hoort in een ánder proces: `*/10 * * * * python -m agency_os heartbeat --watchdog`.
 
-Begin altijd met `status` en daarna `dry-run`. Een droogloop doet de hele cyclus -- lezen, poorten beoordelen, routeren, de prompt bouwen -- en drukt per issue af welke mutatie hij zou hebben gedaan. Pas als die klopt, is `run --once` aan de beurt.
+Begin altijd met `status` en daarna `dry-run`. Een droogloop doet de hele cyclus -- lezen, poorten beoordelen, routeren, de prompt bouwen -- en drukt per issue af welke mutatie hij zou hebben gedaan, plus de routering: welk issue naar welke rol, welk model en welke laan zou gaan. Er gaat geen enkele mutatie over de lijn; de schrijfmethodes komen niet verder dan het handelingenlogboek. Pas als die uitkomst klopt, is `run --once` aan de beurt.
+
+`run --loop` is het echte werk: één proces, één cyclus per `SPIL_INTERVAL_S`, cycli overlappen nooit. SIGINT en SIGTERM laten de lopende cyclus aflopen en stoppen daarna.
+
+## Stoppen
+
+Er zijn drie remmen, van zacht naar hard, en ze zitten alle drie in Linear en niet in de code. Dat is met opzet: wie moet ingrijpen heeft dan geen shell nodig.
+
+| Wat | Waar | Wat er gebeurt |
+|---|---|---|
+| `schakelaar/pauze` | op één issue | dat issue wordt overgeslagen; de rest loopt door |
+| `schakelaar/pauze-alles` | op het bedieningspaneel (`SPIL_PANEL_ISSUE`, standaard WV-156) | binnen één pollronde start er niets meer, lopende runs worden afgebroken en op elk geraakt issue komt één afbreekcomment |
+| Ctrl-C / SIGTERM | op het proces | de lopende cyclus loopt af, daarna stopt de lus |
+
+`schakelaar/pauze-alles` is de noodrem. De Spil mag dat label wél zetten en nooit weghalen: het weghalen is geen belofte in een prompt maar een ontbrekende mogelijkheid in `update_issue` (slot 5). Aanzetten kost dus één klik in Linear, uitzetten is per definitie mensenwerk.
+
+Vergeet na een noodstop niet dat het label blijft staan. `python -m agency_os status` zegt het met zoveel woorden ("schakelaar/pauze-alles staat aan: er start niets") en geeft afloopcode `1`, zodat een cron of een healthcheck erover valt.
 
 ## Configuratie
 
@@ -58,6 +92,13 @@ Volgorde van winnen: vlaggen op de commandoregel, dan `os.environ`, dan `~/.conf
 | `SPIL_ALLOW_FABLE` | `false` | staat hij uit, dan zakt Fable naar Opus 5 mét die zin in de comment |
 | `SPIL_PRICES` | ingebouwde tabel | `model:in:uit:cache` per miljoen tokens, lijstprijs |
 | `SPIL_DRY_RUN` | `false` | |
+| `SPIL_LINEAR_ENDPOINT` | `https://api.linear.app/graphql` | |
+| `SPIL_CONFIG_FILE` | `~/.config/raderwerk/spil.env` | alleen uit `os.environ`; in het bestand zelf zou hij naar zichzelf wijzen |
+| `SPIL_REPO_ROOT` | `~/Developer/Personal/Raderwerk` | waar de klonen van de doelrepo's staan |
+| `SPIL_WORKTREE_ROOT` | `<repo_root>/.worktrees` | mag nooit onder een verboden pad liggen; dat is fataal bij het opstarten |
+| `SPIL_CLAIM_SETTLE_S` | `5` | het venster waarin een tweede claimer zich terugtrekt |
+| `SPIL_RUN_TIMEOUT_S` / `SPIL_NATIVE_SESSION_TIMEOUT_S` | `1800` / `3600` | |
+| `SPIL_CLAUDE_BIN` / `SPIL_CODEX_BIN` / `SPIL_GH_BIN` / `SPIL_GIT_BIN` | `claude` / `codex` / `gh` / `git` | `status` zegt of ze in PATH staan |
 
 Alles wat de Spil onthoudt staat buiten elke repo, onder `SPIL_STATE_DIR`: `spil.sqlite3` (claims, runs, mutaties, poortbeslissingen), `logbook/JJJJ-MM-DD.jsonl` (het handelingenlogboek, één json-object per regel) en `runs/<run-id>/` (de ruwe uitvoer van een model, die nooit voluit in Linear belandt).
 
