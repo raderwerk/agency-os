@@ -21,6 +21,7 @@ class Cfg:
 
     panel_identifier = "WV-156"
     watchdog_max_age_s = 1800
+    issue_budget = (200, 220, 225)
 
 
 class DueTest(unittest.TestCase):
@@ -51,6 +52,7 @@ class BeatTest(unittest.TestCase):
         self.assertEqual(1, len(comments))
         self.assertTrue(comments[0].body.startswith("**Spil · dispatcher · run a1b2c3"))
         self.assertIn("3 issues in de wachtrij", comments[0].body)
+        self.assertIn("noodstop bij 225", comments[0].body, "de grens komt uit de config, niet uit de code")
         self.assertIsNotNone(self.store.last_heartbeat_at())
 
     def test_it_refreshes_the_counters_between_the_markers(self):

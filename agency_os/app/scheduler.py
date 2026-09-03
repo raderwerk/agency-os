@@ -199,7 +199,7 @@ def _warn_once(ctx: Context, result: Any) -> None:
     ctx.client.create_comment(
         result.panel.id,
         comments.signature("Spil", "dispatcher", run_id, ctx.now())
-        + f"\n\nIssueteller staat op {result.switches.issue_count} van 250. "
+        + f"\n\nIssueteller staat op {result.switches.issue_count}. "
         f"Bij {ctx.cfg.issue_budget[1]} claim ik alleen nog incidenten, "
         f"bij {ctx.cfg.issue_budget[2]} zet ik de noodstop.",
         run_id=run_id,

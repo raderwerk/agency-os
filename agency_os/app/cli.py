@@ -226,7 +226,7 @@ def _print_status(state: dict) -> None:
     print(f"endpoint:    {state['config']['linear_endpoint']}")
     print(f"paneel:      {state.get('paneel', {}).get('issue', '?')}")
     print(f"hartslag:    {state['laatste_hartslag'] or 'nooit'}")
-    print(f"issues:      {state.get('issueteller', '?')} van 250")
+    print(f"issues:      {state.get('issueteller', '?')} (noodstop bij {state['config']['issue_budget'][2]})")
     print(f"open claims: {len(state['open_claims'])}")
     print(f"uitvoerders: {state.get('uitvoerders', {})}")
     for problem in state["problemen"]:

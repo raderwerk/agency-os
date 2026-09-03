@@ -50,13 +50,15 @@ def beat(client: Any, store: Any, cfg: Any, panel: Any, *, run_id: str) -> None:
             f"Hartslag. Vandaag {rollup.runs} runs op {rollup.issues} issues, "
             f"€ {rollup.eur:.2f} aan modelkosten, {queue_len} issues in de wachtrij.",
             "",
-            f"Issueteller: {rollup.issue_count} van de 250. Poorten vandaag: "
+            f"Issueteller: {rollup.issue_count}, noodstop bij {cfg.issue_budget[2]}. Poorten vandaag: "
             f"{rollup.gates_passed} akkoord, {rollup.gates_rejected} afgekeurd.",
         ]
     )
     comment_id = client.create_comment(panel.id, body, run_id=run_id)
 
-    description = _with_counters(panel.description or "", rollup=rollup, queue_len=queue_len, now=now)
+    description = _with_counters(
+        panel.description or "", rollup=rollup, queue_len=queue_len, now=now, stop_at=cfg.issue_budget[2]
+    )
     if description is not None:
         client.update_issue(panel.id, run_id=run_id, description=description)
 
@@ -110,7 +112,9 @@ def watchdog(client: Any, store: Any, cfg: Any) -> int:
     return TRIPPED
 
 
-def _with_counters(description: str, *, rollup: Any, queue_len: int, now: datetime) -> Optional[str]:
+def _with_counters(
+    description: str, *, rollup: Any, queue_len: int, now: datetime, stop_at: int
+) -> Optional[str]:
     """Vervangt het tellerblok in de paneelomschrijving, of laat alles staan.
 
     Zonder de twee markeringen raakt deze functie de omschrijving niet aan: een
@@ -125,7 +129,7 @@ def _with_counters(description: str, *, rollup: Any, queue_len: int, now: dateti
             COUNTER_START,
             f"Laatste hartslag: {now:%Y-%m-%d %H:%M} UTC",
             f"Runs vandaag: {rollup.runs} · kosten vandaag: € {rollup.eur:.2f} · wachtrij: {queue_len}",
-            f"Issueteller: {rollup.issue_count} van 250",
+            f"Issueteller: {rollup.issue_count}, noodstop bij {stop_at}",
         ]
     )
     return description[:start] + block + "\n" + description[end:]
