@@ -12,6 +12,7 @@ regel niet los in elke rol terugkomt.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from typing import Optional
 
@@ -83,3 +84,34 @@ def assert_not_gate_opening(comment_text: str, *, author_is_agent: bool) -> None
             "een agent mag geen comment schrijven waarvan de eerste regel met "
             f"{AKKOORD!r} of {AFGEKEURD!r} begint"
         )
+
+
+_FENCE_RE = re.compile(r"^\s*(```|~~~)")
+
+
+def strip_quotes_and_code(text: Optional[str]) -> str:
+    """Haalt codeblokken en citaatregels weg vóór het lezen van een token.
+
+    Spec 7.8: een token dat binnen een citaat of een codeblok staat telt nooit.
+    Een agent die "AKKOORD" in een samenvatting citeert, opent daarmee niets.
+    Fenced blokken (``` of ~~~) verdwijnen inclusief hun inhoud; regels die met
+    '>' beginnen verdwijnen ook. De rest blijft ongewijzigd staan, zodat
+    `parse_gate_decision` gewoon naar de eerste overgebleven regel kan kijken.
+    """
+    if not text:
+        return ""
+    out: list[str] = []
+    fence: Optional[str] = None
+    for line in text.splitlines():
+        match = _FENCE_RE.match(line)
+        if fence is None and match:
+            fence = match.group(1)
+            continue
+        if fence is not None:
+            if match and match.group(1) == fence:
+                fence = None
+            continue
+        if line.lstrip().startswith(">"):
+            continue
+        out.append(line)
+    return "\n".join(out)
