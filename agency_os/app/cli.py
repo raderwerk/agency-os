@@ -217,6 +217,8 @@ def _print_report(report: scheduler.CycleReport) -> None:
         f"{report.finished} afgerond, {report.gates_seen} poorten gezien "
         f"({report.gates_applied} toegepast){', GESTOPT' if report.halted else ''}"
     )
+    for line in report.routed:
+        print(f"  route: {line}")
     for problem in report.errors:
         print(f"  fout: {problem}")
 

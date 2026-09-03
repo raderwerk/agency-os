@@ -190,6 +190,7 @@ def _load(overrides: Mapping[str, str]) -> Config:
         git_bin=need("SPIL_GIT_BIN"),
         repo_root=repo_root,
         worktree_root=worktree_root,
+        state_dir=state_dir,
         run_timeout_s=_as_int("SPIL_RUN_TIMEOUT_S", need("SPIL_RUN_TIMEOUT_S")),
         native_session_timeout_s=_as_int("SPIL_NATIVE_SESSION_TIMEOUT_S", need("SPIL_NATIVE_SESSION_TIMEOUT_S")),
         dry_run=dry_run,

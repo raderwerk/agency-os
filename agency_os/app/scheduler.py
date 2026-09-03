@@ -55,6 +55,10 @@ class CycleReport:
     gates_applied: int
     halted: bool
     errors: tuple[str, ...]
+    # Wat er geclaimd en waarheen gerouteerd is, als leesbare regels. Zonder dit
+    # laat `dry-run` alleen de mutaties zien en blijft de routering onzichtbaar,
+    # terwijl dat juist het antwoord is waarvoor je een droogloop draait.
+    routed: tuple[str, ...] = ()
 
 
 @dataclass
@@ -152,6 +156,11 @@ def run_cycle(ctx: Context, cycle_index: int) -> CycleReport:
         gates_applied=gates_applied,
         halted=False,
         errors=tuple(errors),
+        routed=tuple(
+            f"{job.issue.identifier} -> {job.route.role.key} / {job.route.model_key} "
+            f"({job.route.executor_name})"
+            for job in jobs
+        ),
     )
     ctx.logbook.write("poll", run_id=None, issue=None, payload={"cyclus_verslag": _as_dict(report)})
     return report
@@ -372,5 +381,6 @@ def _as_dict(report: CycleReport) -> dict:
         "poorten_gezien": report.gates_seen,
         "poorten_toegepast": report.gates_applied,
         "gestopt": report.halted,
+        "gerouteerd": list(report.routed),
         "fouten": list(report.errors),
     }
