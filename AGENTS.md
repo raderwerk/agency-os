@@ -19,6 +19,24 @@ Elk issue op deze repo volgt het `Bureau-taak`-sjabloon (linear-workspace-spec.m
 - [ ] README of dit document is bijgewerkt als de wijziging de werkwijze verandert.
 - [ ] Geen geheim, token of credential staat in de diff.
 
+## Eigendom per bestand
+
+Drie engineers, drie onoverlappende bestandsgroepen, één richting in de afhankelijkheden: `app` → `executors` → `linear` → standaardbibliotheek. Geen enkele module importeert omhoog.
+
+| Map | Eigenaar | Wat erin hoort |
+|---|---|---|
+| `agency_os/linear/`, `agency_os/gate.py` | A | alles wat met Linear praat en alles wat onthoudt |
+| `agency_os/executors/` | B | alles wat buiten dit proces draait: claude, codex, git, gh |
+| `agency_os/app/`, `agency_os/roles/`, `tests/fakes.py`, README | C | het proces zelf: cyclus, routering, prompts, logboek, hartslag |
+
+Een bestand heeft precies één eigenaar. Heb je iets van een ander nodig, bouw dan tegen het contract in `docs/architecture.md` hoofdstuk 3 en zet een dubbel in je test; wijzig niet het bestand van een ander. `tests/fakes.py` is van C maar staat er vanaf dag 1, omdat A en B erop bouwen: veranderen mag alleen met een diff-review van alle drie.
+
+`tests/stubs/` vult de modules van A en B in zolang die nog niet gemerged zijn, en doet niets zodra ze er wel zijn. Het is geen tweede implementatie en het hoort niet te groeien.
+
+## Groottediscipline
+
+Geen bestand boven de 400 regels. Loopt een module daar tegenaan, splits hem dan langs een naad die een lezer herkent, in plaats van er nog een afdeling bij te bouwen.
+
 ## PR-conventies
 
 - Branchnaam: `feat/<issue>-<korte-titel>` of `fix/<issue>-<korte-titel>`.
