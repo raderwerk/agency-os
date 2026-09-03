@@ -1,0 +1,68 @@
+{
+  "version": 1,
+  "roles": {
+    "redacteur": {
+      "title": "Redacteur", "prompt_file": "redacteur.md", "default_model": "sonnet",
+      "family": "claude", "executor": "claude", "working_state": "In uitvoering",
+      "done_state": "Agentreview", "needs_worktree": true, "needs_pr": true
+    },
+    "ontwikkelaar": {
+      "title": "Ontwikkelaar", "prompt_file": "ontwikkelaar.md", "default_model": "opus",
+      "family": "claude", "executor": "claude", "working_state": "In uitvoering",
+      "done_state": "Agentreview", "needs_worktree": true, "needs_pr": true
+    },
+    "ontwerper": {
+      "title": "Ontwerper", "prompt_file": "ontwerper.md", "default_model": "opus",
+      "family": "claude", "executor": "claude", "working_state": "In uitvoering",
+      "done_state": "Agentreview", "needs_worktree": true, "needs_pr": true
+    },
+    "campagneplanner": {
+      "title": "Campagneplanner", "prompt_file": "campagneplanner.md", "default_model": "opus",
+      "family": "claude", "executor": "claude", "working_state": "In uitvoering",
+      "done_state": "Agentreview", "needs_worktree": true, "needs_pr": true
+    },
+    "reviewer": {
+      "title": "Reviewer 1", "prompt_file": "reviewer.md", "default_model": "opus",
+      "family": "claude", "executor": "claude", "working_state": "Agentreview",
+      "done_state": "QA op preview", "needs_worktree": true, "needs_pr": false
+    },
+    "qa": {
+      "title": "QA", "prompt_file": "qa.md", "default_model": "opus",
+      "family": "claude", "executor": "claude", "working_state": "QA op preview",
+      "done_state": "Poort · Merge of publicatie", "needs_worktree": true, "needs_pr": false
+    },
+    "qa-rookproef": {
+      "title": "QA · rookproef", "prompt_file": "qa.md", "default_model": "opus",
+      "family": "claude", "executor": "claude", "working_state": "Na-merge controle",
+      "done_state": "Klaar", "needs_worktree": true, "needs_pr": false
+    },
+    "account": {
+      "title": "Account", "prompt_file": "account.md", "default_model": "fable",
+      "family": "claude", "executor": "claude", "working_state": "Lead",
+      "done_state": "Gekwalificeerd", "needs_worktree": false, "needs_pr": false
+    },
+    "strateeg": {
+      "title": "Strateeg", "prompt_file": "strateeg.md", "default_model": "fable",
+      "family": "claude", "executor": "claude", "working_state": "Discovery",
+      "done_state": "Voorstel", "needs_worktree": false, "needs_pr": false
+    }
+  },
+  "rules": [
+    {"team": "WV", "state": "Ingepland",
+     "when": {"soort": ["contentstuk"]}, "role": "redacteur"},
+    {"team": "WV", "state": "Ingepland",
+     "when": {"dienst": ["web"], "soort": ["feature", "bug", "incident"]}, "role": "ontwikkelaar"},
+    {"team": "WV", "state": "Ingepland",
+     "when": {"soort": ["designtaak"]}, "role": "ontwerper"},
+    {"team": "WV", "state": "Ingepland",
+     "when": {"soort": ["campagne", "socialkalender"]}, "role": "campagneplanner"},
+    {"team": "WV", "state": "Ingepland",
+     "when": {"soort": ["bureau", "onderzoek"]}, "role": "ontwikkelaar"},
+    {"team": "WV", "state": "Agentreview", "when": {}, "role": "reviewer"},
+    {"team": "WV", "state": "QA op preview", "when": {}, "role": "qa"},
+    {"team": "WV", "state": "Na-merge controle", "when": {}, "role": "qa-rookproef"},
+    {"team": "KR", "state": "Lead", "when": {}, "role": "account"},
+    {"team": "KR", "state": "Discovery", "when": {}, "role": "strateeg"},
+    {"team": "KR", "state": "Voorstel", "when": {}, "role": "strateeg"}
+  ]
+}
