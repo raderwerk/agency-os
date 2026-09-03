@@ -28,10 +28,11 @@ from .models import (
     ActivityView,
     AgentSessionView,
     CommentView,
-    Contract,
     IssueView,
     MutationRecord,
     canonical_label_name,
+    issue_from_node,
+    parse_dt,
 )
 
 __all__ = ["MutationSink", "LinearError", "WriteRefused", "LinearClient"]
@@ -95,14 +96,7 @@ def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
 
 
-def _parse_dt(value: Optional[str]) -> datetime:
-    if not value:
-        return _utcnow()
-    text = value.replace("Z", "+00:00")
-    parsed = datetime.fromisoformat(text)
-    if parsed.tzinfo is None:
-        parsed = parsed.replace(tzinfo=timezone.utc)
-    return parsed.astimezone(timezone.utc)
+_parse_dt = parse_dt  # tijdstempels worden in models omgezet, hier alleen gebruikt
 
 
 def _digest(variables: Mapping[str, Any]) -> str:
@@ -297,35 +291,8 @@ class LinearClient:
     # ---------------- mapping ----------------
 
     def to_issue_view(self, node: Mapping[str, Any]) -> IssueView:
-        """Ruwe Linear-json -> IssueView, met canonieke labelnamen."""
-        label_ids: dict[str, str] = {}
-        for label in ((node.get("labels") or {}).get("nodes") or []):
-            name = canonical_label_name(label["name"], (label.get("parent") or {}).get("name"))
-            label_ids[name] = label["id"]
-        state = node.get("state") or {}
-        description = node.get("description") or ""
-        estimate = node.get("estimate")
-        return IssueView(
-            id=node["id"],
-            identifier=node.get("identifier") or "",
-            title=node.get("title") or "",
-            description=description,
-            url=node.get("url") or "",
-            team_key=(node.get("team") or {}).get("key") or "",
-            state_id=state.get("id") or "",
-            state_name=state.get("name") or "",
-            state_type=state.get("type") or "",
-            estimate=int(estimate) if estimate is not None else None,
-            priority=int(node.get("priority") or 0),
-            labels=tuple(sorted(label_ids)),
-            label_ids=dict(label_ids),
-            project_id=(node.get("project") or {}).get("id"),
-            project_name=(node.get("project") or {}).get("name"),
-            assignee_id=(node.get("assignee") or {}).get("id"),
-            delegate_id=(node.get("delegate") or {}).get("id"),
-            updated_at=_parse_dt(node.get("updatedAt")),
-            contract=Contract.parse(description),
-        )
+        """Ruwe Linear-json -> IssueView. De vormverandering staat in models."""
+        return issue_from_node(node)
 
     def to_comment_view(self, node: Mapping[str, Any]) -> CommentView:
         user = node.get("user") or {}

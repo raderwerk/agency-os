@@ -344,6 +344,15 @@ class Store:
         return self.conn.execute(
             "SELECT * FROM heartbeats ORDER BY at DESC LIMIT 1").fetchone()
 
+    def last_heartbeat_at(self) -> Optional[datetime]:
+        """Het moment van de laatste hartslag, of None als er nog geen is.
+
+        De wachthond wil een datetime, geen rij: het omzetten van iso hoort in
+        deze laag, niet bij elke aanroeper.
+        """
+        row = self.last_heartbeat()
+        return parse_iso(row["at"]) if row is not None else None
+
 
 def _row_to_run(row: sqlite3.Row) -> RunRecord:
     artefacten = tuple(

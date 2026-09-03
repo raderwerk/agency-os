@@ -19,7 +19,7 @@ from typing import Mapping
 from . import queries
 from .client import LinearClient
 from .killswitch import ISSUE_PAUSE_LABEL, read_switches
-from .models import IssueView, PollResult
+from .models import IssueView, PollResult, issue_from_node
 
 __all__ = ["PollConfig", "poll", "BLOCKING_LABELS", "DEAD_STATE_TYPES",
            "DEFAULT_ISSUE_BUDGET"]
@@ -51,7 +51,7 @@ def poll(client: LinearClient, cfg: PollConfig) -> PollResult:
     """Leest en deelt in. Schrijft niets; dat is de volgende stap van de cyclus."""
     at = datetime.now(timezone.utc)
     nodes = client.paginate(queries.POLL, "issues", {"teamKeys": list(cfg.team_keys)})
-    issues = [client.to_issue_view(node) for node in nodes]
+    issues = [issue_from_node(node) for node in nodes]
 
     panel = next((i for i in issues if i.identifier == cfg.panel_identifier), None)
     if panel is None and cfg.panel_identifier:

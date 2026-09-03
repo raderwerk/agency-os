@@ -17,8 +17,8 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from datetime import datetime
-from typing import Mapping, Optional
+from datetime import datetime, timezone
+from typing import Any, Mapping, Optional
 
 __all__ = [
     "Contract",
@@ -34,6 +34,8 @@ __all__ = [
     "MutationRecord",
     "PollResult",
     "canonical_label_name",
+    "issue_from_node",
+    "parse_dt",
 ]
 
 _CONTRACT_HEADING = re.compile(r"^#{1,6}\s*Opdrachtcontract\s*$", re.IGNORECASE | re.MULTILINE)
@@ -389,3 +391,49 @@ class PollResult:
     gates: tuple[IssueView, ...]
     watching: tuple[IssueView, ...]
     skipped: tuple[tuple[str, str], ...]
+
+
+def parse_dt(value: Optional[str]) -> datetime:
+    """Linear-tijdstempel -> tijdzonebewuste UTC-datetime. Leeg betekent nu."""
+    if not value:
+        return datetime.now(timezone.utc)
+    parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def issue_from_node(node: Mapping[str, Any]) -> IssueView:
+    """Ruwe Linear-json -> IssueView, met canonieke labelnamen.
+
+    Hoort hier en niet op de client: het is een pure vormverandering zonder I/O,
+    en zowel de poll als de testdubbels moeten er precies hetzelfde uit krijgen.
+    """
+    label_ids: dict[str, str] = {}
+    for label in ((node.get("labels") or {}).get("nodes") or []):
+        name = canonical_label_name(label["name"], (label.get("parent") or {}).get("name"))
+        label_ids[name] = label["id"]
+    state = node.get("state") or {}
+    description = node.get("description") or ""
+    estimate = node.get("estimate")
+    return IssueView(
+        id=node["id"],
+        identifier=node.get("identifier") or "",
+        title=node.get("title") or "",
+        description=description,
+        url=node.get("url") or "",
+        team_key=(node.get("team") or {}).get("key") or "",
+        state_id=state.get("id") or "",
+        state_name=state.get("name") or "",
+        state_type=state.get("type") or "",
+        estimate=int(estimate) if estimate is not None else None,
+        priority=int(node.get("priority") or 0),
+        labels=tuple(sorted(label_ids)),
+        label_ids=dict(label_ids),
+        project_id=(node.get("project") or {}).get("id"),
+        project_name=(node.get("project") or {}).get("name"),
+        assignee_id=(node.get("assignee") or {}).get("id"),
+        delegate_id=(node.get("delegate") or {}).get("id"),
+        updated_at=parse_dt(node.get("updatedAt")),
+        contract=Contract.parse(description),
+    )

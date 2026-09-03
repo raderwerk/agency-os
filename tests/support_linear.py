@@ -24,6 +24,7 @@ from agency_os.linear.models import (
     IssueView,
     MutationRecord,
     RunRecord,
+    issue_from_node,
 )
 from agency_os.linear.store import Store
 
@@ -82,12 +83,9 @@ def raw_issue(**overrides: Any) -> dict:
     return node
 
 
-_MAPPER = LinearClient("test-key", dispatcher_user_id=DISPATCHER)
-
-
 def make_issue(**overrides: Any) -> IssueView:
     """Een IssueView, standaard in de vorm van WV-207."""
-    view = _MAPPER.to_issue_view(raw_issue())
+    view = issue_from_node(raw_issue())
     if "labels" in overrides:
         labels = tuple(sorted(overrides.pop("labels")))
         view = dataclasses.replace(

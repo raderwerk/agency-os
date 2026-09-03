@@ -3,12 +3,10 @@
 import unittest
 from datetime import datetime, timezone
 
-from agency_os.linear.client import LinearClient
-from agency_os.linear.models import Contract, canonical_label_name
+from agency_os.linear.models import Contract, canonical_label_name, issue_from_node
 
 from tests.support_linear import make_issue, raw_issue
 
-MAPPER = LinearClient("test-key", dispatcher_user_id="user-spil")
 
 
 class CanonicalLabelTests(unittest.TestCase):
@@ -25,7 +23,7 @@ class CanonicalLabelTests(unittest.TestCase):
         )
 
     def test_issue_view_builds_canonical_names_from_leaf_and_parent(self):
-        issue = MAPPER.to_issue_view(raw_issue())
+        issue = issue_from_node(raw_issue())
         self.assertEqual(issue.labels, (
             "agent/sonnet", "dienst/content", "klant/raderwerk",
             "repo/raderwerk/raderwerk-content", "risico-publiek", "soort/contentstuk",
@@ -33,7 +31,7 @@ class CanonicalLabelTests(unittest.TestCase):
         self.assertEqual(issue.label_ids["soort/contentstuk"], "l2")
 
     def test_label_in_group_splits_only_on_the_first_slash(self):
-        issue = MAPPER.to_issue_view(raw_issue())
+        issue = issue_from_node(raw_issue())
         self.assertEqual(issue.label_in_group("repo"), "raderwerk/raderwerk-content")
         self.assertEqual(issue.repo, "raderwerk/raderwerk-content")
         self.assertIsNone(issue.label_in_group("poort"))
@@ -41,7 +39,7 @@ class CanonicalLabelTests(unittest.TestCase):
 
 class DerivedPropertyTests(unittest.TestCase):
     def test_the_wv_207_shape(self):
-        issue = MAPPER.to_issue_view(raw_issue())
+        issue = issue_from_node(raw_issue())
         self.assertEqual(issue.dienst, "content")
         self.assertEqual(issue.soort, "contentstuk")
         self.assertEqual(issue.klant, "raderwerk")
@@ -51,7 +49,7 @@ class DerivedPropertyTests(unittest.TestCase):
         self.assertFalse(issue.is_gate_state)
 
     def test_risico_defaults_to_laag_when_the_label_is_absent(self):
-        issue = MAPPER.to_issue_view(raw_issue())
+        issue = issue_from_node(raw_issue())
         self.assertEqual(issue.risico, "laag")
         self.assertFalse(issue.high_risk)
 
@@ -77,7 +75,7 @@ class DerivedPropertyTests(unittest.TestCase):
         self.assertIsNone(make_issue(labels=(), contract=bureau).klant)
 
     def test_updated_at_is_timezone_aware_utc(self):
-        issue = MAPPER.to_issue_view(raw_issue())
+        issue = issue_from_node(raw_issue())
         self.assertEqual(issue.updated_at.tzinfo, timezone.utc)
         self.assertEqual(issue.updated_at, datetime(2026, 9, 3, 8, 0, tzinfo=timezone.utc))
 

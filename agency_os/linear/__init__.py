@@ -15,7 +15,6 @@ from .comments import (
     claim_comment,
     gate_card,
     halt_comment,
-    native_fallback_comment,
     qa_report,
     run_comment,
     signature,
@@ -57,7 +56,8 @@ from .models import (
     SwitchState,
     canonical_label_name,
 )
-from .poll import PollConfig, poll
+from . import poll  # submodule; `poll.poll(...)` is the function
+from .poll import PollConfig
 from .store import Store
 
 __all__ = [
@@ -67,7 +67,7 @@ __all__ = [
     "ActivityView", "AgentSessionView", "Artifact", "Claim", "CommentView", "Contract",
     "GateObservation", "IssueView", "MutationRecord", "PollResult", "RunRecord", "SwitchState",
     "canonical_label_name",
-    # poll + claim
+    # poll (de module, niet de functie: `poll.poll(...)`) + claim
     "PollConfig", "poll", "try_claim", "release_claim", "already_ran", "existing_run_comment",
     # machine
     "GATE_PREFIX", "NEXT_ON_DONE", "GATE_ON_APPROVE", "GATE_ON_REJECT", "WAIT_STATE",
@@ -78,7 +78,6 @@ __all__ = [
     "read_switches", "halt_everything", "trip_emergency_stop",
     # comments
     "signature", "claim_comment", "run_comment", "gate_card", "qa_report", "halt_comment",
-    "native_fallback_comment",
     # store + ledger
     "Store", "record_run", "render_tail_block", "parse_tail_block", "rollup", "render_markdown",
     "PriceRow", "FxRate", "DayRollup",
