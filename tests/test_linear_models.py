@@ -3,7 +3,13 @@
 import unittest
 from datetime import datetime, timezone
 
-from agency_os.linear.models import Contract, canonical_label_name, issue_from_node
+from agency_os.linear.models import (
+    Contract,
+    canonical_label_name,
+    exclusive_conflicts,
+    issue_from_node,
+    stale_run_labels,
+)
 
 from tests.support_linear import make_issue, raw_issue
 
@@ -154,6 +160,45 @@ class ContractParseTests(unittest.TestCase):
         self.assertEqual(contract.basisbranch, "main")
         self.assertEqual(contract.omgeving, "geen")
         self.assertFalse(contract.publiek)
+
+
+class ExclusiveLabelGroupTests(unittest.TestCase):
+    """De groep `run/` laat er precies een toe; twee is een geweigerde issueUpdate."""
+
+    def test_two_members_of_one_group_are_a_conflict(self):
+        self.assertEqual(
+            exclusive_conflicts(["run/bezet", "run/klaar", "klant/raderwerk"]),
+            {"run": ["run/bezet", "run/klaar"]},
+        )
+
+    def test_one_member_per_group_is_fine(self):
+        self.assertEqual(
+            exclusive_conflicts(["run/bezet", "soort/onderzoek", "risico-publiek"]), {})
+
+    def test_ungrouped_flags_never_conflict(self):
+        self.assertEqual(
+            exclusive_conflicts(["risico-publiek", "risico-juridisch", "lus-verdacht"]), {})
+
+
+class StaleRunLabelTests(unittest.TestCase):
+    """Het zittende run-label moet mee in dezelfde mutatie, anders faalt hij helemaal."""
+
+    def test_a_finished_run_label_is_swapped_for_the_new_one(self):
+        issue = make_issue(labels=("run/klaar",))
+        self.assertEqual(stale_run_labels(issue, "run/bezet"), ["run/klaar"])
+
+    def test_an_issue_without_a_run_label_has_nothing_to_swap(self):
+        self.assertEqual(stale_run_labels(make_issue(labels=("soort/onderzoek",)), "run/bezet"), [])
+
+    def test_setting_the_label_that_is_already_there_removes_nothing(self):
+        issue = make_issue(labels=("run/onbevestigd",))
+        self.assertEqual(stale_run_labels(issue, "run/onbevestigd"), [])
+
+    def test_the_result_never_conflicts_with_what_it_replaces(self):
+        issue = make_issue(labels=("run/bezet",))
+        removed = stale_run_labels(issue, "run/vastgelopen")
+        remaining = set(issue.labels) - set(removed) | {"run/vastgelopen"}
+        self.assertEqual(exclusive_conflicts(remaining), {})
 
 
 if __name__ == "__main__":

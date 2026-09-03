@@ -26,6 +26,7 @@ from agency_os.executors.base import (
     Usage,
     utcnow,
 )
+from agency_os.linear.models import stale_run_labels
 
 if TYPE_CHECKING:  # pragma: no cover - alleen voor typecontrole
     from agency_os.linear.models import AgentSessionView, IssueView
@@ -247,8 +248,13 @@ class NativeExecutor:
         body = fallback_comment(self.app_name, status, since, receipt.run_id, self.now())
 
         if not self.cfg.dry_run:
+            # `run/vastgelopen` zit in de exclusieve groep `run/`, en het issue
+            # draagt op dit moment `run/bezet` van zijn eigen claim. Zonder de
+            # wissel weigert Linear deze hele update en blijft er van de
+            # terugvalprocedure alleen een comment over.
             client.update_issue(
-                issue.id, run_id=receipt.run_id, clear_delegate=True, added_labels=labels
+                issue.id, run_id=receipt.run_id, clear_delegate=True, added_labels=labels,
+                removed_labels=stale_run_labels(issue, *labels),
             )
             client.create_comment(issue.id, body, run_id=receipt.run_id)
 

@@ -24,6 +24,7 @@ from agency_os.linear.models import (
     IssueView,
     MutationRecord,
     RunRecord,
+    exclusive_conflicts,
     issue_from_node,
 )
 from agency_os.linear.store import Store
@@ -126,6 +127,26 @@ def make_session(**overrides: Any) -> AgentSessionView:
 
 def temp_store(path: str) -> Store:
     return Store(path)
+
+
+class ExclusiveLabelConflict(AssertionError):
+    """Wat Linear zelf zou weigeren met `labelIds not exclusive child labels`."""
+
+
+def refuse_exclusive_conflicts(labels) -> None:
+    """Weiger een labelverzameling die twee leden uit één exclusieve groep draagt.
+
+    De echte API laat er precies één toe en gooit de hele `issueUpdate` weg als
+    dat niet klopt. Een testdubbel die dat wél accepteert laat een hele klasse
+    fouten door: zo kon `try_claim` op een issue met `run/klaar` een groene suite
+    houden en tegelijk in de eerste echte cyclus na een geslaagde run omvallen.
+    """
+    conflicts = exclusive_conflicts(labels)
+    if conflicts:
+        raise ExclusiveLabelConflict(
+            "labelIds not exclusive child labels: "
+            + "; ".join(f"{group}: {', '.join(names)}" for group, names in sorted(conflicts.items()))
+        )
 
 
 class FakeLinearClient(LinearClient):
@@ -250,6 +271,7 @@ class FakeLinearClient(LinearClient):
         labels = set(issue.labels)
         labels.difference_update(summary.get("removedLabelIds") or [])
         labels.update(summary.get("addedLabelIds") or [])
+        refuse_exclusive_conflicts(labels)
         changes: dict[str, Any] = {"labels": tuple(sorted(labels))}
         state = summary.get("stateId")
         if isinstance(state, str) and state.startswith("<"):

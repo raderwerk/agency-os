@@ -18,7 +18,7 @@ from typing import Optional, Sequence
 from .. import gate
 from . import comments, machine
 from .client import LinearClient, WriteRefused
-from .models import CommentView, GateObservation, IssueView
+from .models import CommentView, GateObservation, IssueView, stale_run_labels
 from .store import Store
 
 __all__ = ["evaluate_gate", "enter_gate", "apply_gate_decision", "mark_unconfirmed",
@@ -304,9 +304,14 @@ def _reject(client: LinearClient, store: Store, issue: IssueView, obs: GateObser
         client.create_comment(issue.id, comments.stuck_comment(
             run_id=run_id, when=now, first_reason="zie de eerste afkeuring op deze poort",
             second_reason=reason), run_id=run_id)
+        # `run/vastgelopen` komt uit dezelfde exclusieve groep als het `run/`-label
+        # dat er al staat. Een poortissue mag `run/bezet` dragen -- de poortcyclus
+        # laat dat label er met opzet op staan als spoor van een gestrande run --
+        # dus zonder de swap weigert Linear deze hele update.
         client.update_issue(issue.id, run_id=run_id,
                             added_labels=[STUCK_LABEL, WAITING_LABEL]
-                            if WAITING_LABEL not in issue.labels else [STUCK_LABEL])
+                            if WAITING_LABEL not in issue.labels else [STUCK_LABEL],
+                            removed_labels=stale_run_labels(issue, STUCK_LABEL))
         store.mark_gate_applied(event_id, now)
         return None
     target = machine.next_state(issue.team_key, issue.state_name, "afgekeurd")
@@ -359,6 +364,7 @@ def mark_unconfirmed(client: LinearClient, store: Store, issue: IssueView,
         issue.id, run_id=run_id,
         added_labels=[label for label in (UNCONFIRMED_LABEL, HUMAN_REQUIRED_LABEL)
                       if label not in issue.labels],
+        removed_labels=stale_run_labels(issue, UNCONFIRMED_LABEL),
     )
     store.mark_gate_applied(event_id, now)
     return True

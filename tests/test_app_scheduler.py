@@ -273,6 +273,42 @@ class WriteBackTest(CycleTestCase):
         self.assertIn("exfil.example", run_body)
 
 
+class PullRequestEvidenceTest(CycleTestCase):
+    """De PR die de Spil zelf opent hoort in het bewijs, niet alleen in `pr_url`.
+
+    `_publish` opent de pull request na de modelrun, dus het RUNRESULT-blok kan
+    hem niet kennen. In de tweede live cyclus leverde dat letterlijk een
+    runcomment met "Bewijs: geen bruikbare link" op, op een issue waar de Spil
+    net PR #2 had geopend. Dezelfde lijst voedt de poortkaart.
+    """
+
+    def test_the_pull_request_is_added_when_the_model_named_no_evidence(self):
+        client = self.only(FakeClient(dispatcher_user_id=DISPATCHER), "WV-207")
+        scheduler.run_cycle(self.context(client, FakeExecutor(a_result(artifacts=()))), 1)
+
+        run_body = next(c.body for c in client.comments(client.issue("WV-207").id)
+                        if "Definition of Done" in c.body)
+        self.assertIn("https://github.com/raderwerk/raderwerk-content/pull/7", run_body)
+        self.assertNotIn("geen bruikbare link", run_body)
+        self.assertIn("https://github.com/raderwerk/raderwerk-content/pull/7",
+                      [url for _, url, _ in client.attachments])
+
+    def test_the_pull_request_is_not_listed_twice(self):
+        client = self.only(FakeClient(dispatcher_user_id=DISPATCHER), "WV-207")
+        scheduler.run_cycle(self.context(client, FakeExecutor(a_result())), 1)
+        urls = [url for _, url, _ in client.attachments]
+        self.assertEqual(1, urls.count("https://github.com/raderwerk/raderwerk-content/pull/7"))
+
+    def test_a_run_without_a_pull_request_keeps_its_evidence_untouched(self):
+        result = a_result(uitkomst="vraag", question="Welke bron?", pr_url=None, artifacts=())
+        self.assertEqual((), runs.with_pull_request(result))
+
+    def test_a_pull_request_url_without_a_number_still_gets_a_label(self):
+        result = a_result(pr_url="https://github.com/raderwerk/raderwerk-content/pull/kop",
+                          artifacts=())
+        self.assertEqual("pull request", runs.with_pull_request(result)[0].label)
+
+
 class FakeNative:
     """AsyncExecutor-dubbel: één mention, daarna een uitkomst wanneer de test wil."""
 

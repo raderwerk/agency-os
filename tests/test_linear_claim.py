@@ -4,6 +4,7 @@ import unittest
 from datetime import timedelta
 
 from agency_os.linear import claim as claim_module
+from agency_os.linear.client import LinearError
 from agency_os.linear.store import Store
 
 from tests.support_linear import (
@@ -45,6 +46,50 @@ class TryClaimTests(unittest.TestCase):
         client = FakeLinearClient([self.issue])
         claim_module.try_claim(client, self.store, self.issue, "3f9a2c", settle_s=0)
         self.assertIn("**Spil** claim 3f9a2c op", client.comments("issue-207")[0].body)
+
+    def test_a_finished_issue_can_be_claimed_by_the_next_role(self):
+        """De blokkade uit de tweede live cyclus: WV-210 op Agentreview.
+
+        Na een geslaagde run draagt het issue `run/klaar`. De groep `run/` is
+        exclusief, dus `run/bezet` erbij zetten zonder `run/klaar` weg te halen
+        laat Linear de hele issueUpdate weigeren met `labelIds not exclusive
+        child labels` -- en dan komt geen enkel issue ooit voorbij zijn eerste
+        rol.
+        """
+        done = make_issue(labels=("soort/contentstuk", "run/klaar"))
+        client = FakeLinearClient([done])
+        result = claim_module.try_claim(client, self.store, done, "3f9a2c", settle_s=0)
+        self.assertIsNotNone(result)
+        update = [m for m in client.mutations if m.mutation == "issueUpdate"][0]
+        self.assertEqual(update.variables_summary["addedLabelIds"], ["run/bezet"])
+        self.assertEqual(update.variables_summary["removedLabelIds"], ["run/klaar"])
+        self.assertEqual(client.issue("issue-207").labels.count("run/bezet"), 1)
+        self.assertNotIn("run/klaar", client.issue("issue-207").labels)
+
+    def test_a_failed_run_label_is_swapped_too(self):
+        failed = make_issue(labels=("soort/contentstuk", "run/mislukt"))
+        client = FakeLinearClient([failed])
+        claim_module.try_claim(client, self.store, failed, "3f9a2c", settle_s=0)
+        update = [m for m in client.mutations if m.mutation == "issueUpdate"][0]
+        self.assertEqual(update.variables_summary["removedLabelIds"], ["run/mislukt"])
+
+    def test_a_refused_label_write_does_not_leave_an_open_claim_behind(self):
+        """Een mislukte claim mag het issue geen half uur op slot zetten.
+
+        `insert_claim` gaat vooraf aan de labelwissel. Gooit die wissel, dan is
+        de rij in sqlite van niemand: `try_claim` geeft er daarna eeuwig None op
+        terug tot de verzoening bij het opstarten hem na SPIL_RUN_TIMEOUT_S
+        vrijgeeft.
+        """
+        client = FakeLinearClient([self.issue])
+        client.fail_next("issueUpdate", LinearError("labelIds not exclusive child labels"))
+        with self.assertRaises(LinearError):
+            claim_module.try_claim(client, self.store, self.issue, "3f9a2c", settle_s=0)
+        self.assertEqual(self.store.open_claims(), [])
+
+        self.assertIsNotNone(
+            claim_module.try_claim(client, self.store, self.issue, "4b8d1e", settle_s=0),
+            "de volgende ronde moet het gewoon opnieuw kunnen proberen")
 
     def test_a_second_run_id_cannot_claim_the_same_issue(self):
         client = FakeLinearClient([self.issue])

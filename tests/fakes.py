@@ -35,6 +35,8 @@ from agency_os.linear.models import (
 )
 from agency_os.linear.store import Store
 
+from tests.support_linear import refuse_exclusive_conflicts
+
 FIXTURES = Path(__file__).resolve().parent / "fixtures"
 SUMMARY_KEYS = ("stateId", "addedLabelIds", "removedLabelIds", "assigneeId", "delegateId", "priority")
 GATE_LABELS = ("poort/akkoord", "poort/afgekeurd")
@@ -234,6 +236,7 @@ class FakeClient:
 
         labels = [label for label in issue.labels if label not in removed_labels]
         labels += [label for label in added_labels if label not in labels]
+        refuse_exclusive_conflicts(labels)
         changes: dict[str, Any] = {"labels": tuple(sorted(labels))}
         if state:
             changes["state_name"] = state

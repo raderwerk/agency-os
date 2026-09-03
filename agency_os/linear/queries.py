@@ -80,6 +80,13 @@ query IssueComments($id: String!, $first: Int!) {
 }
 """
 
+# `AgentActivity.content` is een union (`AgentActivityContent!`) en
+# `AgentSessionToPullRequest` draagt geen `url` maar een `pullRequest`. Een kale
+# selectie op allebei is geen smaakkwestie maar een schemafout: Linear
+# beantwoordt het hele document met "must have a selection of subfields" en
+# "Cannot query field url", dus elke poll op een Codex- of Cursorsessie viel om.
+# Geverifieerd tegen de live API op 2026-09-03 met introspectie én een echte
+# query op WV-202.
 AGENT_SESSIONS = """
 query AgentSessions($id: String!) {
   issue(id: $id) {
@@ -92,8 +99,22 @@ query AgentSessions($id: String!) {
         createdAt
         updatedAt
         appUser { id name app }
-        activities(first: 20) { nodes { id createdAt content } }
-        pullRequests { nodes { url } }
+        activities(first: 20) {
+          nodes {
+            id
+            createdAt
+            content {
+              __typename
+              ... on AgentActivityThoughtContent { type body }
+              ... on AgentActivityResponseContent { type body }
+              ... on AgentActivityPromptContent { type body }
+              ... on AgentActivityErrorContent { type body }
+              ... on AgentActivityElicitationContent { type body }
+              ... on AgentActivityActionContent { type action result }
+            }
+          }
+        }
+        pullRequests { nodes { pullRequest { url } } }
       }
     }
   }

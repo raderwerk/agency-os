@@ -357,6 +357,24 @@ class MarkUnconfirmedTests(unittest.TestCase):
         body = client.comments("issue-207")[-1].body
         self.assertIn("voorwaarde 1", body)
 
+    def test_the_busy_label_is_swapped_and_not_stacked(self):
+        """`run/` is exclusief: `run/onbevestigd` erbij zonder `run/bezet` eraf faalt.
+
+        Een poortissue mag `run/bezet` dragen -- de cyclus laat dat label daar met
+        opzet staan als spoor van een gestrande run -- dus dit is geen randgeval.
+        """
+        issue = gate_issue()
+        self.assertIn("run/bezet", issue.labels)
+        client = FakeLinearClient([issue],
+                                  comments={issue.id: [card(), decision(author_id="user-x")]})
+        obs = gates.evaluate_gate(client, issue, approver_ids=APPROVERS,
+                                  dispatcher_user_id=DISPATCHER)
+        gates.mark_unconfirmed(client, self.store, issue, obs, run_id="3f9a2c")
+        update = [m for m in client.mutations if m.mutation == "issueUpdate"][0]
+        self.assertEqual(update.variables_summary["removedLabelIds"], ["run/bezet"])
+        self.assertNotIn("run/bezet", client.issue("issue-207").labels)
+        self.assertIn("run/onbevestigd", client.issue("issue-207").labels)
+
     def test_the_same_refusal_is_never_written_twice(self):
         issue = gate_issue()
         client = FakeLinearClient([issue],
