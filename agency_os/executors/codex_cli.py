@@ -20,16 +20,14 @@ from agency_os.executors.base import (
     ExecutionResult,
     ExecutorConfig,
     ExecutorError,
-    RunResult,
     Usage,
     aborted,
     failed,
-    parse_runresult,
-    run_process,
     utcnow,
     with_duration,
-    write_raw_log,
 )
+from agency_os.executors.claude_runner import RunResult, parse_runresult
+from agency_os.executors.process import run_process, write_raw_log
 from agency_os.executors.gh import find_pr_for_branch, pr_diff
 from agency_os.executors.worktree import (
     Worktree,

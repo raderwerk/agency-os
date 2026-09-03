@@ -23,22 +23,25 @@ from agency_os.executors.base import (
     ExecutorConfig,
     ExecutorError,
     OUTCOMES,
-    ProcessResult,
-    RunResult,
     SyncExecutor,
     TriggerReceipt,
     UnsafeWorktree,
     Usage,
     assert_safe_worktree,
     build_executors,
-    run_process,
     utcnow,
 )
-from agency_os.executors.claude_runner import ClaudeRunner, parse_claude_json, parse_runresult
+from agency_os.executors.claude_runner import (
+    ClaudeRunner,
+    RunResult,
+    parse_claude_json,
+    parse_runresult,
+)
 from agency_os.executors.codex_cli import CodexCliReviewer
 from agency_os.executors.cost import budget_flag, normalise, to_eur
 from agency_os.executors.gh import PullRequest, find_pr_for_branch, open_pr, pr_diff, read_pr
 from agency_os.executors.native import NativeExecutor, extract_pr_url, mention_body
+from agency_os.executors.process import ProcessResult, run_process
 from agency_os.executors.worktree import (
     PushRefused,
     Worktree,

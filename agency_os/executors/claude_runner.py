@@ -8,28 +8,28 @@ Zie docs/architecture.md sectie 10.1. De runner mergt niet, pusht niet naar
 from __future__ import annotations
 
 import json
-from dataclasses import replace
+import re
+from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Optional
+from typing import Mapping, Optional
 
 from agency_os.executors.base import (
     ExecutionRequest,
     ExecutionResult,
     ExecutorConfig,
+    ARTIFACT_TYPES,
+    OUTCOMES,
+    Artifact,
     ExecutorError,
-    ProcessResult,
-    RunResult,
     UnsafeWorktree,
     Usage,
     aborted,
     assert_safe_worktree,
     failed,
-    parse_runresult,
-    run_process,
     utcnow,
     with_duration,
-    write_raw_log,
 )
+from agency_os.executors.process import ProcessResult, run_process, write_raw_log
 from agency_os.executors.gh import open_pr
 from agency_os.executors.worktree import (
     Worktree,
@@ -39,9 +39,104 @@ from agency_os.executors.worktree import (
     repo_dir,
 )
 
-__all__ = ["ClaudeRunner", "parse_claude_json", "parse_runresult"]
+__all__ = ["ClaudeRunner", "RunResult", "parse_claude_json", "parse_runresult"]
 
 SKIP_PERMISSIONS = "--dangerously-skip-permissions"
+
+
+# --------------------------------------------------------------------------
+# het RUNRESULT-contract (sectie 3.9); codex_cli leest dezelfde vorm
+# --------------------------------------------------------------------------
+
+_RUNRESULT_BLOCK = re.compile(
+    r"```[ \t]*(?:json[ \t]+)?RUNRESULT[ \t]*\r?\n(.*?)```",
+    re.DOTALL | re.IGNORECASE,
+)
+
+NO_RUNRESULT = "geen RUNRESULT-blok"
+
+
+def parse_runresult(result_text: str) -> dict:
+    """Lees het laatste ```json RUNRESULT-blok. Ontbreekt of stuk: leeg dict.
+
+    Dit is het enige wat uit modelproza gelezen wordt. Er wordt nooit iets uit
+    de rest van de tekst geraden.
+    """
+    for raw in reversed(_RUNRESULT_BLOCK.findall(result_text or "")):
+        try:
+            data = json.loads(raw)
+        except (json.JSONDecodeError, ValueError):
+            continue
+        if isinstance(data, dict):
+            return data
+    return {}
+
+
+@dataclass(frozen=True)
+class RunResult:
+    """Het gevalideerde RUNRESULT-blok, klaar om een `ExecutionResult` te vullen."""
+
+    uitkomst: str
+    samenvatting: str
+    dod: str
+    vraag: Optional[str]
+    pr_url: Optional[str]
+    bewijs: tuple[Artifact, ...]
+    error: Optional[str]
+
+    @staticmethod
+    def from_dict(data: Mapping[str, object]) -> "RunResult":
+        if not data:
+            return RunResult("mislukt", "", "-", None, None, (), NO_RUNRESULT)
+
+        uitkomst = str(data.get("uitkomst") or "").strip()
+        samenvatting = str(data.get("samenvatting") or "").strip()
+        vraag = _clean(data.get("vraag"))
+        error: Optional[str] = None
+
+        if uitkomst not in OUTCOMES:
+            uitkomst, error = "mislukt", f"onbekende uitkomst in RUNRESULT: {uitkomst!r}"
+        elif uitkomst == "vraag" and not vraag:
+            uitkomst, error = "mislukt", "uitkomst 'vraag' zonder vraagtekst in RUNRESULT"
+        elif uitkomst in ("mislukt", "afgebroken"):
+            error = samenvatting or f"model meldde uitkomst {uitkomst!r} zonder toelichting"
+
+        return RunResult(
+            uitkomst=uitkomst,
+            samenvatting=samenvatting,
+            dod=str(data.get("dod") or "-").strip() or "-",
+            vraag=vraag if uitkomst == "vraag" else None,
+            pr_url=_clean(data.get("pr_url")),
+            bewijs=_artifacts(data.get("bewijs")),
+            error=error,
+        )
+
+
+def _clean(value: object) -> Optional[str]:
+    text = str(value).strip() if value not in (None, "") else ""
+    return text or None
+
+
+def _artifacts(value: object) -> tuple[Artifact, ...]:
+    """Bewijsstukken uit het RUNRESULT-blok; onbekende typen worden 'document'."""
+    if not isinstance(value, list):
+        return ()
+    out: list[Artifact] = []
+    for item in value:
+        if not isinstance(item, dict):
+            continue
+        url = _clean(item.get("url"))
+        if not url:
+            continue
+        kind = str(item.get("type") or "").strip()
+        out.append(
+            Artifact(
+                type=kind if kind in ARTIFACT_TYPES else "document",
+                url=url,
+                label=str(item.get("label") or "").strip(),
+            )
+        )
+    return tuple(out)
 
 
 def _as_int(value: object) -> int:

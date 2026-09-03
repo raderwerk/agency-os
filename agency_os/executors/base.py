@@ -2,8 +2,9 @@
 
 Zie docs/architecture.md sectie 3.5 en 3.6. Dit bestand bevat de bevroren
 dataklassen waar module A en C tegenaan bouwen, de twee executor-protocollen,
-de veiligheidscontrole op werkmappen, en de ene subprocess-aanroep die alle
-executors delen (met tijdslimiet en procesgroep-kill).
+de veiligheidscontrole op werkmappen en de vorm van een mislukte run. Het
+starten van externe commando's staat in `process.py`, het RUNRESULT-blok in
+`claude_runner.py` (de plek die sectie 3.6 ervoor aanwijst).
 
 Deze module importeert nooit uit `agency_os.app` en uit A alleen
 `agency_os.linear.models`. Schrijven naar Linear gebeurt uitsluitend via de
@@ -12,16 +13,10 @@ client die C meegeeft, nooit vanuit deze module zelf.
 
 from __future__ import annotations
 
-import json
-import os
-import re
-import signal
-import subprocess
-import time
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import TYPE_CHECKING, Mapping, Optional, Protocol, Sequence
+from typing import TYPE_CHECKING, Optional, Protocol, Sequence
 
 try:  # pragma: no cover - A levert models.py in een eigen PR op dezelfde basis
     from agency_os.linear.models import Artifact
@@ -37,6 +32,7 @@ except ImportError:  # pragma: no cover - identiek aan het contract in sectie 3.
 
 
 if TYPE_CHECKING:  # pragma: no cover - alleen voor typecontrole
+    from agency_os.executors.process import ProcessResult
     from agency_os.linear.models import IssueView
 
 __all__ = [
@@ -50,17 +46,16 @@ __all__ = [
     "ExecutionResult",
     "ExecutorConfig",
     "ExecutorError",
-    "ProcessResult",
-    "RunResult",
     "SyncExecutor",
     "TriggerReceipt",
     "UnsafeWorktree",
     "Usage",
+    "aborted",
     "assert_safe_worktree",
     "build_executors",
-    "parse_runresult",
-    "run_process",
+    "failed",
     "utcnow",
+    "with_duration",
 ]
 
 #: De vier uitkomsten uit sectie 3.5; C leidt hier de volgende status uit af.
@@ -276,192 +271,6 @@ def assert_safe_worktree(path: Path, repo: str, cfg: ExecutorConfig) -> None:
             raise UnsafeWorktree(f"werkmap {path} valt onder verboden pad {prefix}")
 
 
-# --------------------------------------------------------------------------
-# subprocessen
-# --------------------------------------------------------------------------
-
-
-@dataclass(frozen=True)
-class ProcessResult:
-    """Uitkomst van één extern commando."""
-
-    cmd: tuple[str, ...]
-    returncode: int
-    stdout: str
-    stderr: str
-    timed_out: bool
-    duration_s: float
-
-    @property
-    def ok(self) -> bool:
-        return self.returncode == 0 and not self.timed_out
-
-    def check(self) -> "ProcessResult":
-        """Gooi `CommandFailed` als het commando niet slaagde."""
-        if not self.ok:
-            raise CommandFailed(self.cmd, self.returncode, self.stderr)
-        return self
-
-
-def _kill_group(proc: subprocess.Popen) -> None:
-    """Ruim het hele procesgroep op: een model start zelf ook processen."""
-    try:
-        pgid = os.getpgid(proc.pid)
-    except (ProcessLookupError, OSError):  # pragma: no cover - race bij afsluiten
-        return
-    for sig in (signal.SIGTERM, signal.SIGKILL):
-        try:
-            os.killpg(pgid, sig)
-        except (ProcessLookupError, PermissionError, OSError):  # pragma: no cover
-            return
-        try:
-            proc.wait(timeout=5)
-            return
-        except subprocess.TimeoutExpired:  # pragma: no cover - dan volgt SIGKILL
-            continue
-
-
-def run_process(
-    cmd: Sequence[str],
-    *,
-    cwd: Optional[Path] = None,
-    stdin_text: Optional[str] = None,
-    timeout_s: Optional[float] = None,
-    env: Optional[Mapping[str, str]] = None,
-) -> ProcessResult:
-    """Voer een commando uit in een eigen sessie, met tijdslimiet.
-
-    Bij een tijdslimiet wordt de hele procesgroep afgeschoten (`start_new_session`
-    plus `killpg`) — `subprocess.run` alleen doodt de kleinkinderen niet, en juist
-    die houdt een vastgelopen modelrun in leven. `timed_out=True` vertaalt zich
-    bij de aanroeper naar uitkomst 'afgebroken'.
-    """
-    started = time.monotonic()
-    proc = subprocess.Popen(  # noqa: S603 - vaste commando's uit de configuratie
-        list(cmd),
-        cwd=str(cwd) if cwd else None,
-        stdin=subprocess.PIPE if stdin_text is not None else subprocess.DEVNULL,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-        start_new_session=True,
-        env=dict(env) if env is not None else None,
-    )
-    timed_out = False
-    try:
-        stdout, stderr = proc.communicate(stdin_text, timeout=timeout_s)
-    except subprocess.TimeoutExpired:
-        timed_out = True
-        _kill_group(proc)
-        try:
-            stdout, stderr = proc.communicate(timeout=10)
-        except (subprocess.TimeoutExpired, ValueError):  # pragma: no cover
-            stdout, stderr = "", ""
-    return ProcessResult(
-        cmd=tuple(cmd),
-        returncode=proc.returncode if proc.returncode is not None else -1,
-        stdout=stdout or "",
-        stderr=stderr or "",
-        timed_out=timed_out,
-        duration_s=time.monotonic() - started,
-    )
-
-
-# --------------------------------------------------------------------------
-# het RUNRESULT-contract (sectie 3.9)
-# --------------------------------------------------------------------------
-
-_RUNRESULT_BLOCK = re.compile(
-    r"```[ \t]*(?:json[ \t]+)?RUNRESULT[ \t]*\r?\n(.*?)```",
-    re.DOTALL | re.IGNORECASE,
-)
-
-NO_RUNRESULT = "geen RUNRESULT-blok"
-
-
-def parse_runresult(result_text: str) -> dict:
-    """Lees het laatste ```json RUNRESULT-blok. Ontbreekt of stuk: leeg dict.
-
-    Dit is het enige wat uit modelproza gelezen wordt. Er wordt nooit iets uit
-    de rest van de tekst geraden.
-    """
-    for raw in reversed(_RUNRESULT_BLOCK.findall(result_text or "")):
-        try:
-            data = json.loads(raw)
-        except (json.JSONDecodeError, ValueError):
-            continue
-        if isinstance(data, dict):
-            return data
-    return {}
-
-
-@dataclass(frozen=True)
-class RunResult:
-    """Het gevalideerde RUNRESULT-blok, klaar om een `ExecutionResult` te vullen."""
-
-    uitkomst: str
-    samenvatting: str
-    dod: str
-    vraag: Optional[str]
-    pr_url: Optional[str]
-    bewijs: tuple[Artifact, ...]
-    error: Optional[str]
-
-    @staticmethod
-    def from_dict(data: Mapping[str, object]) -> "RunResult":
-        if not data:
-            return RunResult("mislukt", "", "-", None, None, (), NO_RUNRESULT)
-
-        uitkomst = str(data.get("uitkomst") or "").strip()
-        samenvatting = str(data.get("samenvatting") or "").strip()
-        vraag = _clean(data.get("vraag"))
-        error: Optional[str] = None
-
-        if uitkomst not in OUTCOMES:
-            uitkomst, error = "mislukt", f"onbekende uitkomst in RUNRESULT: {uitkomst!r}"
-        elif uitkomst == "vraag" and not vraag:
-            uitkomst, error = "mislukt", "uitkomst 'vraag' zonder vraagtekst in RUNRESULT"
-        elif uitkomst in ("mislukt", "afgebroken"):
-            error = samenvatting or f"model meldde uitkomst {uitkomst!r} zonder toelichting"
-
-        return RunResult(
-            uitkomst=uitkomst,
-            samenvatting=samenvatting,
-            dod=str(data.get("dod") or "-").strip() or "-",
-            vraag=vraag if uitkomst == "vraag" else None,
-            pr_url=_clean(data.get("pr_url")),
-            bewijs=_artifacts(data.get("bewijs")),
-            error=error,
-        )
-
-
-def _clean(value: object) -> Optional[str]:
-    text = str(value).strip() if value not in (None, "") else ""
-    return text or None
-
-
-def _artifacts(value: object) -> tuple[Artifact, ...]:
-    """Bewijsstukken uit het RUNRESULT-blok; onbekende typen worden 'document'."""
-    if not isinstance(value, list):
-        return ()
-    out: list[Artifact] = []
-    for item in value:
-        if not isinstance(item, dict):
-            continue
-        url = _clean(item.get("url"))
-        if not url:
-            continue
-        kind = str(item.get("type") or "").strip()
-        out.append(
-            Artifact(
-                type=kind if kind in ARTIFACT_TYPES else "document",
-                url=url,
-                label=str(item.get("label") or "").strip(),
-            )
-        )
-    return tuple(out)
-
-
 def failed(
     req: ExecutionRequest,
     started_at: datetime,
@@ -491,7 +300,7 @@ def failed(
 
 
 def aborted(
-    req: ExecutionRequest, started_at: datetime, proc: ProcessResult, *, source: str = "unknown"
+    req: ExecutionRequest, started_at: datetime, proc: "ProcessResult", *, source: str = "unknown"
 ) -> ExecutionResult:
     """De tijdslimiet verliep en de procesgroep is afgeschoten."""
     return failed(
@@ -506,17 +315,3 @@ def aborted(
 def with_duration(usage: Usage, seconds: float) -> Usage:
     """Vul de duur aan als de executor er zelf geen meldde."""
     return usage if usage.duration_s else replace(usage, duration_s=seconds)
-
-
-def write_raw_log(
-    cfg: ExecutorConfig, run_id: str, stdout: str, stderr: str
-) -> Optional[Path]:
-    """Ruwe uitvoer naar `<state_dir>/runs/<run_id>/`; die gaat nooit integraal naar Linear."""
-    directory = Path(cfg.state_dir) / "runs" / run_id
-    try:
-        directory.mkdir(parents=True, exist_ok=True)
-        (directory / "stdout.json").write_text(stdout, encoding="utf-8")
-        (directory / "stderr.txt").write_text(stderr, encoding="utf-8")
-    except OSError:
-        return None
-    return directory

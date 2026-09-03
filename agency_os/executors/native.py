@@ -21,6 +21,7 @@ from agency_os.executors.base import (
     ExecutionRequest,
     ExecutionResult,
     ExecutorConfig,
+    ExecutorError,
     TriggerReceipt,
     Usage,
     utcnow,
@@ -59,7 +60,7 @@ def _local(when: datetime) -> str:
         from zoneinfo import ZoneInfo
 
         return when.astimezone(ZoneInfo(_AMSTERDAM)).strftime("%Y-%m-%d %H:%M")
-    except Exception:  # pragma: no cover - zonder tzdata blijft UTC over
+    except (ImportError, KeyError, OSError):  # pragma: no cover - zonder tzdata blijft UTC over
         return when.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M")
 
 
@@ -69,6 +70,8 @@ def mention_body(agent: str, req: ExecutionRequest) -> str:
     Codex heeft `in raderwerk/<repo>` nodig (zonder cloudomgeving per repo faalt
     de delegatie met "failed to start"), Cursor wil `repo=` en `branch=`.
     """
+    if not req.repo:
+        raise ExecutorError(f"{_APP_NAMES[agent]} kan niets doen zonder repo op het issue")
     app = _APP_NAMES[agent]
     issue = req.issue
     opdracht = f"pak {issue.identifier} op ({req.role_title}): {issue.title}"
@@ -153,12 +156,12 @@ class NativeExecutor:
             return receipt, None
 
         receipt = replace(receipt, session_id=session.id)
-        self._claim_delegate(client, issue, session, receipt)
 
         if session.status == "complete":
             return receipt, self._completed(receipt, session)
 
         if session.status in _RUNNING:
+            self._claim_delegate(client, issue, session, receipt)
             receipt = replace(receipt, strikes=0)
             if self._expired(receipt):
                 return receipt, self._fall_back(

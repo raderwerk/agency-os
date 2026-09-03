@@ -13,13 +13,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional, Sequence
 
-from agency_os.executors.base import (
-    ExecutorConfig,
-    ExecutorError,
-    ProcessResult,
-    assert_safe_worktree,
-    run_process,
-)
+from agency_os.executors.base import ExecutorConfig, ExecutorError, assert_safe_worktree
+from agency_os.executors.process import ProcessResult, run_process
 
 __all__ = [
     "PROTECTED_BRANCHES",

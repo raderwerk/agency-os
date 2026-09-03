@@ -12,7 +12,8 @@ import json
 from dataclasses import dataclass
 from typing import Optional, Sequence
 
-from agency_os.executors.base import ExecutorConfig, ProcessResult, run_process
+from agency_os.executors.base import ExecutorConfig
+from agency_os.executors.process import ProcessResult, run_process
 
 __all__ = [
     "PR_FIELDS",
