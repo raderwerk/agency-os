@@ -73,6 +73,10 @@ class RoleSpec:
     done_state: str
     needs_worktree: bool
     needs_pr: bool
+    #: Mag `agent/<model>` op het issue het model van deze rol overrulen? Waar
+    #: voor de rollen die het werk máken, onwaar voor de rollen die het
+    #: beoordelen. Zie `decide` voor waarom dat verschil moet bestaan.
+    model_from_label: bool = True
 
     @property
     def prompt_path(self) -> Path:
@@ -164,6 +168,7 @@ def load_table(path: Path | str = ROUTING_TABLE_PATH) -> RoutingTable:
                 done_state=spec["done_state"],
                 needs_worktree=bool(spec["needs_worktree"]),
                 needs_pr=bool(spec["needs_pr"]),
+                model_from_label=bool(spec.get("model_from_label", True)),
             )
         except KeyError as exc:
             raise RoutingError(f"rol {key!r} mist veld {exc.args[0]!r}") from exc
@@ -202,7 +207,15 @@ def decide(table: RoutingTable, issue: Any, *, allow_fable: bool) -> Route | Ref
 
     model_key = role.default_model
     hint = issue.agent_hint
-    if hint in NATIVE_MODELS:
+    if hint in MODELS and not role.model_from_label:
+        # `agent/<model>` zegt wie het werk máákt. Laat je dat label ook de
+        # beoordelende rollen sturen, dan kiest de bouwer zijn eigen reviewer:
+        # `agent/fable` op WV-210 zette de reviewer op Claude terwijl de roster
+        # juist eist dat hij uit een andere familie komt. Erger nog, de laan
+        # blijft `codex-cli`, dus er draait GPT-5.6 terwijl het Kostenboek
+        # `claude-opus-5` boekt tegen de prijs van Opus.
+        reasons.append(f"label agent/{hint} genegeerd: {role.title} houdt zijn eigen model")
+    elif hint in NATIVE_MODELS:
         model_key = hint
         reasons.append(f"native lane via label agent/{hint}")
     elif hint in MODELS:

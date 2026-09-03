@@ -24,17 +24,20 @@
     "reviewer": {
       "title": "Reviewer 1", "prompt_file": "reviewer.md", "default_model": "codex-cli",
       "family": "openai", "executor": "codex-cli", "working_state": "Agentreview",
-      "done_state": "QA op preview", "needs_worktree": true, "needs_pr": false
+      "done_state": "QA op preview", "needs_worktree": true, "needs_pr": false,
+      "model_from_label": false
     },
     "qa": {
       "title": "QA", "prompt_file": "qa.md", "default_model": "opus",
       "family": "claude", "executor": "claude", "working_state": "QA op preview",
-      "done_state": "Poort · Merge of publicatie", "needs_worktree": true, "needs_pr": false
+      "done_state": "Poort · Merge of publicatie", "needs_worktree": true, "needs_pr": false,
+      "model_from_label": false
     },
     "qa-rookproef": {
       "title": "QA · rookproef", "prompt_file": "qa.md", "default_model": "opus",
       "family": "claude", "executor": "claude", "working_state": "Na-merge controle",
-      "done_state": "Klaar", "needs_worktree": true, "needs_pr": false
+      "done_state": "Klaar", "needs_worktree": true, "needs_pr": false,
+      "model_from_label": false
     },
     "account": {
       "title": "Account", "prompt_file": "account.md", "default_model": "fable",
