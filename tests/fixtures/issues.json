@@ -1,0 +1,65 @@
+{
+  "issues": [
+    {
+      "id": "490eb350-0000-0000-0000-00004897ad34",
+      "identifier": "WV-207",
+      "title": "Publiek bouwlogboek, wekelijks",
+      "description": "## Opdracht\n\nSchrijf vier weken bouwlogboek.\n\n## Acceptatiecriteria\n\n- Vier bestanden onder content/raderwerk/bouwlogboek/\n- Elke week noemt één beslissing en één fout\n\n## Definition of Done\n\n- [ ] Markdown staat in de repo, via PR\n- [ ] Metatitel en metabeschrijving staan erbij\n\n## Opdrachtcontract\n\n```yaml\nversie: v1\nklant: raderwerk\nrepo: raderwerk/raderwerk-content\nbasisbranch: main\nomgeving: preview\npubliek: true\n```\n",
+      "url": "https://linear.app/fightclub-techhub/issue/WV-207/publiek-bouwlogboek-wekelijks",
+      "team": {"key": "WV"},
+      "state": {"id": "state-ingepland", "name": "Ingepland", "type": "unstarted"},
+      "estimate": 2,
+      "priority": 2,
+      "labels": {"nodes": [
+        {"id": "lab-dienst-content", "name": "content", "parent": {"name": "dienst"}},
+        {"id": "lab-soort-contentstuk", "name": "contentstuk", "parent": {"name": "soort"}},
+        {"id": "lab-klant-raderwerk", "name": "raderwerk", "parent": {"name": "klant"}},
+        {"id": "lab-agent-sonnet", "name": "sonnet", "parent": {"name": "agent"}},
+        {"id": "lab-repo-content", "name": "raderwerk/raderwerk-content", "parent": {"name": "repo"}},
+        {"id": "lab-risico-publiek", "name": "risico-publiek", "parent": null}
+      ]},
+      "project": {"id": "proj-p8", "name": "Het raderwerk zelf"},
+      "assignee": null,
+      "delegate": null,
+      "updatedAt": "2026-09-03T09:00:00.000Z"
+    },
+    {
+      "id": "490eb350-0000-0000-0000-000048970001",
+      "identifier": "WV-208",
+      "title": "Voorraadsync met de ERP-brug",
+      "description": "## Acceptatiecriteria\n\n- De sync is idempotent\n\n## Definition of Done\n\n- [ ] Tests groen\n",
+      "url": "https://linear.app/fightclub-techhub/issue/WV-208/voorraadsync",
+      "team": {"key": "WV"},
+      "state": {"id": "state-poort", "name": "Poort · Merge of publicatie", "type": "started"},
+      "estimate": 3,
+      "priority": 1,
+      "labels": {"nodes": [
+        {"id": "lab-dienst-web", "name": "web", "parent": {"name": "dienst"}},
+        {"id": "lab-soort-feature", "name": "feature", "parent": {"name": "soort"}},
+        {"id": "lab-klant-zoutkaap", "name": "zoutkaap", "parent": {"name": "klant"}},
+        {"id": "lab-repo-bridge", "name": "raderwerk/zoutkaap-erp-bridge", "parent": {"name": "repo"}},
+        {"id": "lab-poort-wacht", "name": "wacht-op-mens", "parent": {"name": "poort"}}
+      ]},
+      "project": {"id": "proj-zoutkaap", "name": "Zoutkaap fase 1"},
+      "assignee": {"id": "user-mens"},
+      "delegate": null,
+      "updatedAt": "2026-09-03T08:30:00.000Z"
+    },
+    {
+      "id": "490eb350-0000-0000-0000-000048970156",
+      "identifier": "WV-156",
+      "title": "Bedieningspaneel",
+      "description": "De schakelaars van de werkplaats.\n\n<!-- spil:tellers -->\nnog geen hartslag\n<!-- /spil:tellers -->\n",
+      "url": "https://linear.app/fightclub-techhub/issue/WV-156/bedieningspaneel",
+      "team": {"key": "WV"},
+      "state": {"id": "state-uitvoering", "name": "In uitvoering", "type": "started"},
+      "estimate": null,
+      "priority": 1,
+      "labels": {"nodes": []},
+      "project": {"id": "proj-p8", "name": "Het raderwerk zelf"},
+      "assignee": null,
+      "delegate": null,
+      "updatedAt": "2026-09-03T07:00:00.000Z"
+    }
+  ]
+}
