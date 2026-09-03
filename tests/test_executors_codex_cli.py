@@ -80,7 +80,9 @@ class ReviewerTests(unittest.TestCase):
         self.assertEqual(
             self.calls[0]["cmd"],
             ["codex", "exec", "-m", "gpt-5.6-sol", "-c", "model_reasoning_effort=xhigh",
-             "-c", "notify=[]", "-"],
+             "-c", "notify=[]", "-c", "mcp_servers={}",
+             "-c", 'plugins."codex-app-tools@openai-bundled".enabled=false',
+             "-s", "read-only", "-"],
         )
         self.assertNotIn("--search", self.calls[0]["cmd"],
                          "codex exec 0.147.0 kent die vlag niet en stopt met afloopcode 2")
@@ -88,6 +90,28 @@ class ReviewerTests(unittest.TestCase):
         self.assertIn("Doe het werk uit het issue.", stdin)
         self.assertIn("## Diff van PR #7", stdin)
         self.assertIn("diff --git a/x b/x", stdin)
+
+    def test_the_reviewer_gets_no_side_channel_into_linear(self):
+        """`codex exec` erft de MCP-servers en app-connectors van wie hem start.
+
+        In de tweede live cyclus zat daar een Linear-connector bij. De reviewer
+        probeerde zijn oordeel daarmee zelf als comment weg te schrijven in
+        plaats van het op stdout terug te geven; de connector annuleerde die
+        schrijfactie en wat overbleef was een run zonder RUNRESULT-blok. De
+        enige uitvoerweg van een rol is stdout.
+        """
+        self.patch()
+        CodexCliReviewer(self.cfg).run(make_request())
+        cmd = self.calls[0]["cmd"]
+        self.assertIn("mcp_servers={}", cmd)
+        self.assertIn(f'plugins."{codex_cli.APP_TOOLS_PLUGIN}".enabled=false', cmd)
+
+    def test_the_reviewer_runs_read_only(self):
+        """"Wijzig niets" hoort een ontbrekende mogelijkheid te zijn, geen belofte."""
+        self.patch()
+        CodexCliReviewer(self.cfg).run(make_request())
+        cmd = self.calls[0]["cmd"]
+        self.assertEqual("read-only", cmd[cmd.index("-s") + 1])
 
     def test_the_pull_request_url_is_the_evidence_even_without_one_in_the_block(self):
         self.patch()

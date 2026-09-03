@@ -299,6 +299,24 @@ class PullRequestEvidenceTest(CycleTestCase):
         urls = [url for _, url, _ in client.attachments]
         self.assertEqual(1, urls.count("https://github.com/raderwerk/raderwerk-content/pull/7"))
 
+    def test_a_refused_attachment_never_costs_the_claim_release(self):
+        """Linear weigert een bijlage op een url die een integratie al bezit.
+
+        Dat overkwam WV-210 letterlijk: de GitHub-koppeling had PR #2 zelf al
+        aan het issue gehangen, en de tweede poging kwam terug als "Unable to
+        create issue attachment". Die fout nam de rest van `finish` mee, dus de
+        claim bleef open en `run/bezet` bleef staan op een run die klaar was.
+        """
+        client = self.only(FakeClient(dispatcher_user_id=DISPATCHER), "WV-207")
+        client.fail_next("attachmentLinkURL", LinearError("Unable to create issue attachment"))
+        report = scheduler.run_cycle(self.context(client, FakeExecutor(a_result())), 1)
+
+        self.assertEqual((), report.errors)
+        issue = client.issue("WV-207")
+        self.assertIn("run/klaar", issue.labels)
+        self.assertNotIn("run/bezet", issue.labels)
+        self.assertEqual("Agentreview", issue.state_name)
+
     def test_a_run_without_a_pull_request_keeps_its_evidence_untouched(self):
         result = a_result(uitkomst="vraag", question="Welke bron?", pr_url=None, artifacts=())
         self.assertEqual((), runs.with_pull_request(result))

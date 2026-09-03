@@ -21,10 +21,15 @@ SKELETON_FILE = ROLES_DIR / "_skelet.md"
 
 OUTPUT_CONTRACT = """## Uitvoercontract
 
-Je schrijft precies één comment. Die begint met de handtekening en eindigt met
-een machineleesbaar staartblok. Daartussen: wat je deed in gewone zinnen, een
-kopje **Bewijs** met links, de Definition of Done met per punt een bewijslink,
-en de volgende status.
+Je levert precies één comment op, als tekst in je uitvoer. Je plaatst hem niet
+zelf: de Spil leest je uitvoer en zet hem onder het issue. Heb je gereedschap
+waarmee je Linear zou kunnen schrijven, dan gebruik je dat niet -- niet voor een
+comment, niet voor een status, niet voor een label. Wat je buiten je uitvoer om
+doet staat buiten het handelingenlogboek en telt dus niet.
+
+Die comment begint met de handtekening en eindigt met een machineleesbaar
+staartblok. Daartussen: wat je deed in gewone zinnen, een kopje **Bewijs** met
+links, de Definition of Done met per punt een bewijslink, en de volgende status.
 
 De handtekening is de eerste regel:
 

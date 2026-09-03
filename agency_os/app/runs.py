@@ -23,7 +23,7 @@ from agency_os.executors import base as executors
 from agency_os.executors import cost, worktree
 from agency_os.linear import claim as claims
 from agency_os.linear import comments, gates, ledger, machine
-from agency_os.linear.client import LinearError
+from agency_os.linear.client import LinearError, WriteRefused
 from agency_os.linear.models import Artifact, Claim, RunRecord
 from agency_os.linear.store import parse_iso
 
@@ -328,8 +328,7 @@ def finish(ctx: Any, job: Job, result: Any) -> None:
             assignee_id=assignee,
         )
 
-    for artifact in result.artifacts:
-        ctx.client.attach_link(issue.id, artifact.url, artifact.label or artifact.type, run_id=job.run_id)
+    _attach(ctx, job, result.artifacts)
 
     claims.release_claim(ctx.client, ctx.store, job.claim, final_label=FINAL_LABEL[result.uitkomst])
     ctx.store.close_session(issue.id, job.run_id, ctx.now())
@@ -339,6 +338,25 @@ def finish(ctx: Any, job: Job, result: Any) -> None:
         issue=issue.identifier,
         payload={"uitkomst": result.uitkomst, "volgende_status": target, "kosten_eur": run.kosten_eur},
     )
+
+
+def _attach(ctx: Any, job: Job, artifacts: Any) -> None:
+    """Bijlagen koppelen, maar nooit ten koste van het uitvoercontract.
+
+    Een bijlage is een dubbeling: dezelfde link staat al in de comment. Linear
+    weigert `attachmentLinkURL` op een url die een integratie al bezit -- de
+    GitHub-koppeling had PR #2 zelf al aan WV-210 gehangen, en de tweede poging
+    kwam terug als "Unable to create issue attachment". Zonder deze afscherming
+    nam die fout de rest van `finish` mee: de claim werd niet vrijgegeven en
+    `run/bezet` bleef staan op een run die allang klaar was.
+    """
+    for artifact in artifacts:
+        try:
+            ctx.client.attach_link(job.issue.id, artifact.url,
+                                   artifact.label or artifact.type, run_id=job.run_id)
+        except (LinearError, WriteRefused) as exc:
+            ctx.logbook.write("run", run_id=job.run_id, issue=job.issue.identifier,
+                              payload={"bijlage_niet_gekoppeld": artifact.url, "fout": str(exc)})
 
 
 def outcome_of(ctx: Any, job: Job, result: Any) -> tuple[Optional[str], list[str], Optional[str]]:
