@@ -115,10 +115,11 @@ class HappyPathTest(CycleTestCase):
         self.assertNotIn("run/bezet", issue.labels)
 
         self.assertEqual(
-            ["commentCreate", "issueUpdate", "issueUpdate", "commentCreate",
+            ["issueUpdate", "commentCreate", "issueUpdate", "commentCreate",
              "issueUpdate", "attachmentLinkURL", "issueUpdate"],
             self.names(client),
-            "claim (comment + label), status naar In uitvoering, dan comment -> issueUpdate -> bijlage -> vrijgave",
+            "claim (label eerst, dan comment: het slot gaat voor de aankondiging), status naar "
+            "In uitvoering, dan comment -> issueUpdate -> bijlage -> vrijgave",
         )
 
     def test_the_prompt_carries_the_skeleton_the_role_and_the_output_contract(self):

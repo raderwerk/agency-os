@@ -5,6 +5,7 @@ from __future__ import annotations
 import tempfile
 import unittest
 from datetime import date
+from pathlib import Path
 
 from tests.fakes import FakeClient, canonical_label, make_issue, make_run, make_session, temp_store
 
@@ -101,7 +102,7 @@ class BuildersTest(unittest.TestCase):
             store = temp_store(tmp)
             store.bump_role_run("issue-1", "redacteur", date(2026, 9, 3))
             self.assertEqual(1, store.role_run_count("issue-1", "redacteur", date(2026, 9, 3)))
-            self.assertTrue(store.path.exists())
+            self.assertTrue(Path(store.path).exists())
 
 
 if __name__ == "__main__":

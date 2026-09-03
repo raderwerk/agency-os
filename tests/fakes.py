@@ -20,13 +20,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Mapping, Optional, Sequence
 
-from tests import stubs
-
-stubs.install()
-
-from agency_os import gate  # noqa: E402
-from agency_os.linear.client import WriteRefused  # noqa: E402
-from agency_os.linear.models import (  # noqa: E402
+from agency_os import gate
+from agency_os.linear.client import WriteRefused
+from agency_os.linear.models import (
     ActivityView,
     AgentSessionView,
     Artifact,
@@ -35,8 +31,9 @@ from agency_os.linear.models import (  # noqa: E402
     IssueView,
     MutationRecord,
     RunRecord,
+    issue_from_node,
 )
-from agency_os.linear.store import Store  # noqa: E402
+from agency_os.linear.store import Store
 
 FIXTURES = Path(__file__).resolve().parent / "fixtures"
 SUMMARY_KEYS = ("stateId", "addedLabelIds", "removedLabelIds", "assigneeId", "delegateId", "priority")
@@ -51,32 +48,48 @@ def canonical_label(node: Mapping[str, Any]) -> str:
 
 
 def issue_from_raw(raw: Mapping[str, Any]) -> IssueView:
-    """Zet een ruwe Linear-issue-node om in een IssueView."""
-    labels = tuple(sorted(canonical_label(node) for node in raw["labels"]["nodes"]))
-    label_ids = {canonical_label(node): node["id"] for node in raw["labels"]["nodes"]}
-    state = raw["state"]
-    project = raw.get("project") or {}
-    return IssueView(
-        id=raw["id"],
-        identifier=raw["identifier"],
-        title=raw["title"],
-        description=raw.get("description") or "",
-        url=raw["url"],
-        team_key=raw["team"]["key"],
-        state_id=state["id"],
-        state_name=state["name"],
-        state_type=state["type"],
-        estimate=raw.get("estimate"),
-        priority=raw.get("priority") or 0,
-        labels=labels,
-        label_ids=label_ids,
-        project_id=project.get("id"),
-        project_name=project.get("name"),
-        assignee_id=(raw.get("assignee") or {}).get("id"),
-        delegate_id=(raw.get("delegate") or {}).get("id"),
-        updated_at=datetime.fromisoformat(raw["updatedAt"].replace("Z", "+00:00")),
-        contract=Contract.parse(raw.get("description") or ""),
-    )
+    """Zet een ruwe Linear-issue-node om in een IssueView.
+
+    Zelfde omzetting als de poll gebruikt, dus de fakes kunnen niet afdrijven van
+    de echte client: `agency_os.linear.models.issue_from_node`.
+    """
+    return issue_from_node(raw)
+
+
+def node_from_issue(issue: IssueView) -> dict:
+    """De omgekeerde weg: IssueView -> ruwe Linear-node.
+
+    De echte `poll` leest via `paginate`, niet via `.issues`. Zonder deze stap
+    zou de fake twee waarheden hebben -- een bevroren fixture aan de leeskant en
+    een levende dict aan de schrijfkant -- en zouden testen groen blijven terwijl
+    de dispatcher zijn eigen schrijfacties niet terugziet.
+    """
+    labels = []
+    for name in issue.labels:
+        parent, _, leaf = name.partition("/")
+        node: dict[str, Any] = {"id": issue.label_ids.get(name, f"lab-{name}")}
+        if leaf:
+            node["name"] = leaf
+            node["parent"] = {"name": parent}
+        else:
+            node["name"] = name
+        labels.append(node)
+    return {
+        "id": issue.id,
+        "identifier": issue.identifier,
+        "title": issue.title,
+        "description": issue.description,
+        "url": issue.url,
+        "team": {"key": issue.team_key},
+        "state": {"id": issue.state_id, "name": issue.state_name, "type": issue.state_type},
+        "estimate": issue.estimate,
+        "priority": issue.priority,
+        "labels": {"nodes": labels},
+        "project": {"id": issue.project_id, "name": issue.project_name} if issue.project_id else None,
+        "assignee": {"id": issue.assignee_id} if issue.assignee_id else None,
+        "delegate": {"id": issue.delegate_id} if issue.delegate_id else None,
+        "updatedAt": issue.updated_at.isoformat(),
+    }
 
 
 def load_fixture(name: str = "issues.json") -> list[dict]:
@@ -135,7 +148,7 @@ class FakeClient:
 
     def query(self, document: str, variables: dict | None = None) -> dict:
         return {
-            "issues": {"nodes": self.raw_issues},
+            "issues": {"nodes": [node_from_issue(i) for i in self.issues.values()]},
             "organization": {"createdIssueCount": self.issue_count},
             "viewer": {"id": self.dispatcher_user_id, "name": "Spil"},
         }
@@ -205,6 +218,9 @@ class FakeClient:
         priority: int | None = None,
         description: str | None = None,
         gate_ok: bool = False,
+        clear_assignee: bool = False,
+        current_state: str | None = None,
+        team_key: str | None = None,
     ) -> None:
         issue = self.issues[issue_id]
         for label in added_labels:
@@ -222,7 +238,9 @@ class FakeClient:
         if state:
             changes["state_name"] = state
             changes["state_id"] = f"state-{state.lower().replace(' ', '-')}"
-        if assignee_id is not None:
+        if clear_assignee:
+            changes["assignee_id"] = None
+        elif assignee_id is not None:
             changes["assignee_id"] = assignee_id
         if clear_delegate:
             changes["delegate_id"] = None
@@ -241,7 +259,7 @@ class FakeClient:
                 "stateId": state,
                 "addedLabelIds": list(added_labels),
                 "removedLabelIds": list(removed_labels),
-                "assigneeId": assignee_id,
+                "assigneeId": None if clear_assignee else assignee_id,
                 "delegateId": None if clear_delegate else delegate_id,
                 "priority": priority,
             },
