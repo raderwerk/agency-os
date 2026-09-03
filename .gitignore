@@ -1,0 +1,24 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Virtuele omgevingen
+.venv/
+venv/
+env/
+
+# Editors en OS
+.vscode/
+.idea/
+.DS_Store
+
+# Lokale configuratie en geheimen
+.env
+.env.*
+*.local
