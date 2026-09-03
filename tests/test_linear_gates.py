@@ -256,12 +256,24 @@ class ApplyTests(unittest.TestCase):
         bodies = [c.body for c in client.comments("issue-207") if c.author_id == DISPATCHER]
         self.assertTrue(any("geen derde poging" in body for body in bodies))
 
-    def test_supervision_time_is_stored_on_the_gate_event(self):
+    def test_supervision_time_measures_the_human_and_not_the_poll(self):
         self._apply(gate_issue(), [card(), decision()])
         row = self.store.conn.execute("SELECT * FROM gate_events").fetchone()
         self.assertEqual(row["card_at"], "2026-09-03T09:00:00Z")
-        self.assertIsNotNone(row["decided_at"])
+        # De beslissing staat 20 minuten na de kaart; de pollronde die hem las
+        # mag daar niet bij opgeteld worden.
+        self.assertEqual(row["decided_at"], "2026-09-03T09:20:00Z")
         self.assertIsNotNone(row["applied_at"])
+
+    def test_a_label_decision_falls_back_to_the_moment_we_saw_it(self):
+        issue = gate_issue(labels=("poort/akkoord", "poort/wacht-op-mens"))
+        client = FakeLinearClient([issue], comments={issue.id: [card()]},
+                                  history_supported=False)
+        obs = gates.evaluate_gate(client, issue, approver_ids=APPROVERS,
+                                  dispatcher_user_id=DISPATCHER)
+        gates.apply_gate_decision(client, self.store, issue, obs, run_id="3f9a2c")
+        row = self.store.conn.execute("SELECT * FROM gate_events").fetchone()
+        self.assertGreater(row["decided_at"], row["card_at"])
 
 
 class MarkUnconfirmedTests(unittest.TestCase):

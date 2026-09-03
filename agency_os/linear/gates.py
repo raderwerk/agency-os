@@ -207,23 +207,42 @@ def apply_gate_decision(client: LinearClient, store: Store, issue: IssueView,
     if obs.source_id and store.gate_decision_seen(issue.id, issue.state_name, obs.source_id):
         return None
     now = _utcnow()
+    decided_at = _decided_at(client, issue, obs, now)
     if obs.refusal == DEGRADED_ACTOR:
         store.set_meta("laatste_gedegradeerde_poort", f"{issue.identifier}@{now.isoformat()}")
 
     if obs.outcome == "akkoord":
-        return _approve(client, store, issue, obs, run_id=run_id, now=now)
-    return _reject(client, store, issue, obs, run_id=run_id, now=now)
+        return _approve(client, store, issue, obs, run_id=run_id, now=now,
+                        decided_at=decided_at)
+    return _reject(client, store, issue, obs, run_id=run_id, now=now, decided_at=decided_at)
+
+
+def _decided_at(client: LinearClient, issue: IssueView, obs: GateObservation,
+                fallback: datetime) -> datetime:
+    """Wanneer de mens besloot, niet wanneer wij het zagen.
+
+    Het verschil tussen poortkaart en besluit is de supervisiemeting (spec 7.5
+    stap 8) en dat is een van de twee getallen die er echt toe doen; er zit tot
+    een pollronde tussen. Bij het tekstkanaal is de comment-tijd het echte
+    moment. Bij het labelkanaal weten we het niet en valt hij terug op nu.
+    """
+    if obs.source != "comment" or not obs.source_id:
+        return fallback
+    for comment in client.comments(issue.id):
+        if comment.id == obs.source_id:
+            return comment.created_at
+    return fallback
 
 
 def _approve(client: LinearClient, store: Store, issue: IssueView, obs: GateObservation, *,
-             run_id: str, now: datetime) -> Optional[str]:
+             run_id: str, now: datetime, decided_at: datetime) -> Optional[str]:
     target = machine.next_state(issue.team_key, issue.state_name, "akkoord")
     if target is None:
         return None
-    event_id = _record(store, issue, obs, now, rejections=0)
+    event_id = _record(store, issue, obs, decided_at, rejections=0)
     client.create_comment(issue.id, comments.confirmation_comment(
         run_id=run_id, when=now, actor_name=obs.actor_name or "een mens",
-        decided_at=now, source=obs.source or "comment",
+        decided_at=decided_at, source=obs.source or "comment",
         source_id=obs.source_id or "", outcome="akkoord", next_state=target), run_id=run_id)
     # Slot 2 verbiedt de Spil om `poort/akkoord` te zetten, ook als spec 7.5 stap 5
     # het als normalisatie beschrijft. Het bevestigingscomment hierboven is de
@@ -241,10 +260,10 @@ def _approve(client: LinearClient, store: Store, issue: IssueView, obs: GateObse
 
 
 def _reject(client: LinearClient, store: Store, issue: IssueView, obs: GateObservation, *,
-            run_id: str, now: datetime) -> Optional[str]:
+            run_id: str, now: datetime, decided_at: datetime) -> Optional[str]:
     attempt = store.rejection_count(issue.id, issue.state_name) + 1
     reason = obs.token or "geen reden meegegeven"
-    event_id = _record(store, issue, obs, now, rejections=attempt)
+    event_id = _record(store, issue, obs, decided_at, rejections=attempt)
     if attempt >= 2:
         # Spec 7.6 stap 7: geen derde poging. Het issue blijft in de poort staan.
         client.create_comment(issue.id, comments.stuck_comment(
@@ -271,11 +290,12 @@ def _reject(client: LinearClient, store: Store, issue: IssueView, obs: GateObser
     return target
 
 
-def _record(store: Store, issue: IssueView, obs: GateObservation, now: datetime,
+def _record(store: Store, issue: IssueView, obs: GateObservation, decided_at: datetime,
             *, rejections: int) -> int:
     return store.record_gate_event(
         issue_id=issue.id, gate_state=issue.state_name, card_comment_id=obs.card_comment_id,
-        card_at=obs.card_created_at, decided_at=now, outcome=obs.outcome, token=obs.token,
+        card_at=obs.card_created_at, decided_at=decided_at, outcome=obs.outcome,
+        token=obs.token,
         source=obs.source, source_id=obs.source_id, actor_id=obs.actor_id,
         actor_name=obs.actor_name, valid=obs.valid, refusal=obs.refusal, rejections=rejections,
     )
