@@ -22,7 +22,7 @@ from typing import Callable, Optional
 
 from . import comments
 from .client import LinearClient
-from .models import Claim, IssueView
+from .models import Claim, IssueView, stale_run_labels
 from .store import Store
 
 __all__ = ["try_claim", "release_claim", "already_ran", "existing_run_comment",
@@ -70,22 +70,32 @@ def try_claim(client: LinearClient, store: Store, issue: IssueView, run_id: str,
     open_claim = store.open_claim(issue.id)
     if open_claim is not None and open_claim["run_id"] != run_id:
         return None
-    if open_claim is None and not store.insert_claim(
-            issue.id, run_id, issue.identifier, now()):
+    fresh_row = open_claim is None
+    if fresh_row and not store.insert_claim(issue.id, run_id, issue.identifier, now()):
         return None
 
-    we_set_the_label = issue.run_state != "bezet"
-    if we_set_the_label:
-        client.update_issue(
-            issue.id, run_id=run_id, added_labels=[BUSY_LABEL],
-            removed_labels=[QUEUE_LABEL] if issue.run_state == "wachtrij" else [],
-        )
+    try:
+        we_set_the_label = issue.run_state != "bezet"
+        if we_set_the_label:
+            client.update_issue(
+                issue.id, run_id=run_id, added_labels=[BUSY_LABEL],
+                removed_labels=stale_run_labels(issue, BUSY_LABEL),
+            )
 
-    claimed_at = now()
-    comment_id = existing_run_comment(client, issue.id, run_id)
-    if comment_id is None:
-        comment_id = client.create_comment(
-            issue.id, comments.claim_comment(run_id, claimed_at), run_id=run_id)
+        claimed_at = now()
+        comment_id = existing_run_comment(client, issue.id, run_id)
+        if comment_id is None:
+            comment_id = client.create_comment(
+                issue.id, comments.claim_comment(run_id, claimed_at), run_id=run_id)
+    except Exception:
+        # De rij in sqlite is van deze aanroep. Blijft hij open staan terwijl de
+        # claim nooit is gelukt, dan houdt hij het issue onclaimbaar tot de
+        # verzoening bij het opstarten hem na `SPIL_RUN_TIMEOUT_S` vrijgeeft --
+        # een half uur stilstand voor iets wat nooit gedraaid heeft. Precies dat
+        # gebeurde in de tweede live cyclus toen de labelwissel geweigerd werd.
+        if fresh_row:
+            store.release_claim(issue.id, run_id, "niet-geclaimd", now())
+        raise
 
     if settle_s > 0:
         time.sleep(settle_s)

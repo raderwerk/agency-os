@@ -23,8 +23,8 @@ from agency_os.executors import base as executors
 from agency_os.executors import cost, worktree
 from agency_os.linear import claim as claims
 from agency_os.linear import comments, gates, ledger, machine
-from agency_os.linear.client import LinearError
-from agency_os.linear.models import Claim, RunRecord
+from agency_os.linear.client import LinearError, WriteRefused
+from agency_os.linear.models import Artifact, Claim, RunRecord
 from agency_os.linear.store import parse_iso
 
 FINAL_LABEL = {
@@ -172,6 +172,7 @@ def collect_native(ctx: Any, watching: dict[str, Any], errors: list[str], *, gua
         if outcome is None:
             continue
         del ctx.receipts[issue_id]
+        ctx.handled.add(issue_id)
         guard(errors, f"terugschrijven {issue.identifier}", lambda job=job, r=outcome: finish(ctx, job, r))
         finished += 1
     return finished
@@ -227,6 +228,16 @@ def rehydrate(ctx: Any, watching: dict[str, Any], errors: list[str]) -> int:
     return recovered
 
 
+def _discussion(ctx: Any, issue: Any) -> tuple:
+    """De comments op het issue voor in de prompt; een leesfout kost geen run."""
+    try:
+        return tuple(ctx.client.comments(issue.id))
+    except LinearError as exc:
+        ctx.logbook.write("run", run_id=None, issue=issue.identifier,
+                          payload={"discussie_niet_gelezen": str(exc)})
+        return ()
+
+
 def request_for(ctx: Any, job: Job) -> Any:
     """De opdracht voor B: prompt, repo, branch en de grenzen eromheen."""
     role, issue = job.route.role, job.issue
@@ -242,7 +253,8 @@ def request_for(ctx: Any, job: Job) -> Any:
         model_display=job.route.model.display,
         model_ledger=job.route.model.ledger,
         prompt=prompts.build_prompt(ctx.cfg, role, issue, run_id=job.run_id,
-                                    branch=branch, base_branch=base_branch),
+                                    branch=branch, base_branch=base_branch,
+                                    discussion=_discussion(ctx, issue)),
         repo=issue.repo,
         base_branch=base_branch,
         branch=branch,
@@ -255,10 +267,30 @@ def request_for(ctx: Any, job: Job) -> Any:
     )
 
 
+def with_pull_request(result: Any) -> tuple:
+    """De pull request die de Spil zelf opende, vooraan in het bewijs.
+
+    `_publish` opent de PR ná de modelrun, dus het RUNRESULT-blok kan hem niet
+    kennen: een model dat netjes geen url verzint levert een leeg `bewijs` aan.
+    Het gevolg stond letterlijk in de eerste geslaagde live run van WV-210:
+    "Bewijs: geen bruikbare link", op een issue waar de Spil op dat moment
+    https://github.com/raderwerk/raderwerk-content/pull/2 had geopend. Dezelfde
+    lijst voedt de poortkaart, dus zonder deze regel leest een mens bij de poort
+    een kaart zonder het enige artefact dat er toe doet.
+    """
+    artifacts = tuple(result.artifacts)
+    url = getattr(result, "pr_url", None)
+    if not url or any(a.url == url for a in artifacts):
+        return artifacts
+    number = url.rstrip("/").rsplit("/", 1)[-1]
+    label = f"PR #{number}" if number.isdigit() else "pull request"
+    return (Artifact("pr", url, label), *artifacts)
+
+
 def finish(ctx: Any, job: Job, result: Any) -> None:
     """Het uitvoercontract: één comment, één issueUpdate, eventueel bijlagen."""
     issue, role = job.issue, job.route.role
-    kept, refused = executors.safe_artifacts(result.artifacts)
+    kept, refused = executors.safe_artifacts(with_pull_request(result))
     result = replace(result, artifacts=kept)
     target, extra_labels, assignee = outcome_of(ctx, job, result)
     run = run_record(ctx, job, result, target)
@@ -307,8 +339,7 @@ def finish(ctx: Any, job: Job, result: Any) -> None:
             assignee_id=assignee,
         )
 
-    for artifact in result.artifacts:
-        ctx.client.attach_link(issue.id, artifact.url, artifact.label or artifact.type, run_id=job.run_id)
+    _attach(ctx, job, result.artifacts)
 
     claims.release_claim(ctx.client, ctx.store, job.claim, final_label=FINAL_LABEL[result.uitkomst])
     ctx.store.close_session(issue.id, job.run_id, ctx.now())
@@ -318,6 +349,25 @@ def finish(ctx: Any, job: Job, result: Any) -> None:
         issue=issue.identifier,
         payload={"uitkomst": result.uitkomst, "volgende_status": target, "kosten_eur": run.kosten_eur},
     )
+
+
+def _attach(ctx: Any, job: Job, artifacts: Any) -> None:
+    """Bijlagen koppelen, maar nooit ten koste van het uitvoercontract.
+
+    Een bijlage is een dubbeling: dezelfde link staat al in de comment. Linear
+    weigert `attachmentLinkURL` op een url die een integratie al bezit -- de
+    GitHub-koppeling had PR #2 zelf al aan WV-210 gehangen, en de tweede poging
+    kwam terug als "Unable to create issue attachment". Zonder deze afscherming
+    nam die fout de rest van `finish` mee: de claim werd niet vrijgegeven en
+    `run/bezet` bleef staan op een run die allang klaar was.
+    """
+    for artifact in artifacts:
+        try:
+            ctx.client.attach_link(job.issue.id, artifact.url,
+                                   artifact.label or artifact.type, run_id=job.run_id)
+        except (LinearError, WriteRefused) as exc:
+            ctx.logbook.write("run", run_id=job.run_id, issue=job.issue.identifier,
+                              payload={"bijlage_niet_gekoppeld": artifact.url, "fout": str(exc)})
 
 
 def outcome_of(ctx: Any, job: Job, result: Any) -> tuple[Optional[str], list[str], Optional[str]]:

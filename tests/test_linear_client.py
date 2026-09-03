@@ -260,5 +260,59 @@ class TransportTests(unittest.TestCase):
         self.assertFalse(caught.exception.matches("rate limit"))
 
 
+class AgentSessionQueryTests(unittest.TestCase):
+    """De vorm die de live API op 2026-09-03 werkelijk teruggeeft.
+
+    `AgentActivity.content` is een union en `AgentSessionToPullRequest` draagt
+    geen `url`. Een kale selectie op een van beide laat Linear het hele document
+    weigeren, dus elke poll op een Codex- of Cursorsessie viel om met
+    "must have a selection of subfields" en "Cannot query field url".
+    """
+
+    def test_the_query_selects_subfields_on_the_activity_union(self):
+        self.assertIn("... on AgentActivityResponseContent", queries.AGENT_SESSIONS)
+        self.assertIn("... on AgentActivityActionContent", queries.AGENT_SESSIONS)
+        self.assertNotIn("nodes { id createdAt content }", queries.AGENT_SESSIONS)
+
+    def test_the_query_reaches_the_pull_request_one_level_deeper(self):
+        self.assertIn("pullRequests { nodes { pullRequest { url } } }", queries.AGENT_SESSIONS)
+
+    def test_a_live_shaped_response_parses_into_a_session_view(self):
+        node = {
+            "id": "sess-9",
+            "status": "complete",
+            "summary": "Verwerk QA-bevindingen",
+            "createdAt": "2026-09-03T11:10:40.623Z",
+            "updatedAt": "2026-09-03T11:21:29.560Z",
+            "appUser": {"id": "app-codex", "name": "Codex", "app": True},
+            "activities": {"nodes": [
+                {"id": "a-1", "createdAt": "2026-09-03T11:21:29.433Z",
+                 "content": {"__typename": "AgentActivityResponseContent",
+                             "type": "response", "body": "### Summary"}},
+                {"id": "a-2", "createdAt": "2026-09-03T11:21:29.433Z",
+                 "content": {"__typename": "AgentActivityActionContent",
+                             "type": "action", "action": "open_pr",
+                             "result": "https://github.com/raderwerk/raderwerk-content/pull/2"}},
+            ]},
+            "pullRequests": {"nodes": [
+                {"pullRequest": {"url": "https://github.com/raderwerk/raderwerk-content/pull/2"}}]},
+        }
+        view = StubClient().to_session_view(node)
+        self.assertEqual(view.app_user_name, "Codex")
+        self.assertEqual(view.pull_request_url,
+                         "https://github.com/raderwerk/raderwerk-content/pull/2")
+        self.assertEqual([a.body for a in view.activities],
+                         ["### Summary",
+                          "https://github.com/raderwerk/raderwerk-content/pull/2"])
+
+    def test_a_session_without_a_pull_request_stays_none(self):
+        node = {"id": "s", "status": "active", "summary": None,
+                "createdAt": "2026-09-03T11:10:40.623Z",
+                "updatedAt": "2026-09-03T11:10:40.623Z",
+                "appUser": {"id": "app-codex", "name": "Codex", "app": True},
+                "activities": {"nodes": []}, "pullRequests": {"nodes": []}}
+        self.assertIsNone(StubClient().to_session_view(node).pull_request_url)
+
+
 if __name__ == "__main__":
     unittest.main()

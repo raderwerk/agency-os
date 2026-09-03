@@ -34,9 +34,20 @@ __all__ = [
     "MutationRecord",
     "PollResult",
     "canonical_label_name",
+    "EXCLUSIVE_LABEL_GROUPS",
+    "exclusive_conflicts",
+    "stale_run_labels",
     "issue_from_node",
     "parse_dt",
 ]
+
+#: Labelgroepen waarin Linear precies één lid per issue toelaat (spec hoofdstuk 3).
+#: Een tweede lid toevoegen zonder het eerste weg te halen wordt door de API
+#: geweigerd met `labelIds not exclusive child labels`, en dan mislukt de hele
+#: `issueUpdate` -- niet alleen dat ene label.
+EXCLUSIVE_LABEL_GROUPS = frozenset(
+    {"klant", "dienst", "soort", "poort", "risico", "run", "schakelaar"}
+)
 
 _CONTRACT_HEADING = re.compile(r"^#{1,6}\s*Opdrachtcontract\s*$", re.IGNORECASE | re.MULTILINE)
 _FENCE = re.compile(r"^\s*(```|~~~)\s*([A-Za-z0-9_-]*)\s*$")
@@ -61,6 +72,43 @@ def canonical_label_name(name: str, parent_name: Optional[str]) -> str:
     if parent_name:
         return f"{parent_name}/{name}"
     return name
+
+
+def stale_run_labels(issue: Any, *adding: str) -> list[str]:
+    """Het zittende `run/`-label dat weg moet om `adding` erop te kunnen zetten.
+
+    `run/` is een exclusieve groep, dus `run/bezet` naast `run/klaar` bestaat
+    niet: Linear weigert de hele `issueUpdate` met `labelIds not exclusive child
+    labels`. Elke plek die een run-label zet moet het zittende label in dezelfde
+    mutatie weghalen -- claimen, vastlopen, en een poort die onbevestigd of
+    vastgelopen raakt.
+
+    Zet je het label dat er al staat, dan valt er niets te wisselen en geeft
+    deze functie een lege lijst terug in plaats van het eigen label weg te halen.
+
+    Staat hier en niet in `claim.py`, omdat `executors/` uit module A alleen
+    `linear.models` mag importeren en de native lane dezelfde regel nodig heeft.
+    """
+    current = getattr(issue, "run_state", None)
+    if not current:
+        return []
+    label = f"run/{current}"
+    return [] if label in adding else [label]
+
+
+def exclusive_conflicts(labels: Any) -> dict[str, list[str]]:
+    """Groepen waarin deze labelverzameling meer dan één lid heeft.
+
+    Pure functie, zodat de testdubbels van Linear dezelfde regel kunnen afdwingen
+    als de echte API in plaats van een verboden toestand stilzwijgend te
+    accepteren. Geeft `{}` terug als er niets aan de hand is.
+    """
+    per_group: dict[str, list[str]] = {}
+    for label in sorted(set(labels)):
+        group, _, leaf = str(label).partition("/")
+        if leaf and group in EXCLUSIVE_LABEL_GROUPS:
+            per_group.setdefault(group, []).append(str(label))
+    return {group: names for group, names in per_group.items() if len(names) > 1}
 
 
 def _yaml_scalar(raw: str) -> Optional[str]:

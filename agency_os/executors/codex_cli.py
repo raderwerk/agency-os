@@ -36,7 +36,11 @@ from agency_os.executors.worktree import (
     repo_dir,
 )
 
-__all__ = ["CodexCliReviewer", "parse_codex_usage"]
+__all__ = ["APP_TOOLS_PLUGIN", "CodexCliReviewer", "parse_codex_usage"]
+
+#: De codex-plugin die de ChatGPT-app-connectors aanzet, waaronder de
+#: Linear-connector. Uit voor elke rolrun: een rol levert zijn oordeel op stdout.
+APP_TOOLS_PLUGIN = "codex-app-tools@openai-bundled"
 
 _TOKENS = re.compile(
     r"tokens?\s*(?:used|usage)?\s*[:=]?.*?input[\s=:]+([\d,]+).*?output[\s=:]+([\d,]+)",
@@ -148,6 +152,18 @@ class CodexCliReviewer:
         versie van deze repo een run die gegarandeerd mislukte. Een reviewer
         beoordeelt bovendien een diff die hij volledig meekrijgt, dus hij heeft
         het web niet nodig.
+
+        De drie overrides eronder halen de werkplaats van de mens weg. `codex
+        exec` leest `~/.codex/config.toml` van wie hem start, en daar staan
+        MCP-servers met levende inloggegevens en de app-connectors van ChatGPT
+        in -- waaronder een Linear-connector die kan schrijven in precies de
+        workspace die de Spil bestuurt. In de tweede live cyclus deed de
+        reviewer dat ook: hij probeerde zijn oordeel zelf als Linear-comment weg
+        te schrijven in plaats van het via stdout terug te geven, de connector
+        annuleerde die schrijfactie, en wat overbleef was een run zonder
+        RUNRESULT-blok. De enige uitvoerweg van een rol is stdout, en
+        `-s read-only` maakt van "wijzig niets" een ontbrekende mogelijkheid in
+        plaats van een zin in een prompt.
         """
         return [
             self.cfg.codex_bin,
@@ -158,6 +174,12 @@ class CodexCliReviewer:
             f"model_reasoning_effort={self.cfg.codex_reasoning_effort}",
             "-c",
             "notify=[]",
+            "-c",
+            "mcp_servers={}",
+            "-c",
+            f'plugins."{APP_TOOLS_PLUGIN}".enabled=false',
+            "-s",
+            "read-only",
             "-",
         ]
 

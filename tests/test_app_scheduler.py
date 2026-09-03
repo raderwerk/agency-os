@@ -138,6 +138,26 @@ class HappyPathTest(CycleTestCase):
         self.assertTrue(executor.requests[0].branch.startswith("feat/WV-207-"), executor.requests[0].branch)
         self.assertEqual("raderwerk/raderwerk-content", executor.requests[0].repo)
 
+    def test_the_prompt_carries_the_answer_a_human_left_in_a_comment(self):
+        """De lus vraag -> antwoord -> volgende run bestond niet.
+
+        Een rol die iets niet weet stelt volgens regel 6 een vraag en stopt, een
+        mens antwoordt in een comment, en de volgende run kreeg dat antwoord
+        nooit te zien: de prompt droeg alleen `issue.description`. Hetzelfde
+        gold voor het oordeel van de reviewer.
+        """
+        client = self.only(FakeClient(dispatcher_user_id=DISPATCHER), "WV-207")
+        issue = client.issue("WV-207")
+        client.add_comment(issue.id, "Antwoord: gebruik de richtprijs van EUR 750 voor een S.",
+                           author_id="user-mens", author_name="Youp", author_is_app=False)
+        executor = FakeExecutor(a_result())
+        scheduler.run_cycle(self.context(client, executor), 1)
+
+        prompt = executor.requests[0].prompt
+        self.assertIn("## Discussie op het issue", prompt)
+        self.assertIn("gebruik de richtprijs van EUR 750", prompt)
+        self.assertLess(prompt.index("Onwrikbare regels"), prompt.index("Discussie op het issue"))
+
     def test_a_question_parks_the_issue_with_a_human(self):
         client = self.only(FakeClient(dispatcher_user_id=DISPATCHER), "WV-207")
         result = a_result(uitkomst="vraag", question="Welke vier weken precies?", pr_url=None, artifacts=())
@@ -271,6 +291,60 @@ class WriteBackTest(CycleTestCase):
                         if "Definition of Done" in c.body)
         self.assertIn("Geweigerd bewijs", run_body)
         self.assertIn("exfil.example", run_body)
+
+
+class PullRequestEvidenceTest(CycleTestCase):
+    """De PR die de Spil zelf opent hoort in het bewijs, niet alleen in `pr_url`.
+
+    `_publish` opent de pull request na de modelrun, dus het RUNRESULT-blok kan
+    hem niet kennen. In de tweede live cyclus leverde dat letterlijk een
+    runcomment met "Bewijs: geen bruikbare link" op, op een issue waar de Spil
+    net PR #2 had geopend. Dezelfde lijst voedt de poortkaart.
+    """
+
+    def test_the_pull_request_is_added_when_the_model_named_no_evidence(self):
+        client = self.only(FakeClient(dispatcher_user_id=DISPATCHER), "WV-207")
+        scheduler.run_cycle(self.context(client, FakeExecutor(a_result(artifacts=()))), 1)
+
+        run_body = next(c.body for c in client.comments(client.issue("WV-207").id)
+                        if "Definition of Done" in c.body)
+        self.assertIn("https://github.com/raderwerk/raderwerk-content/pull/7", run_body)
+        self.assertNotIn("geen bruikbare link", run_body)
+        self.assertIn("https://github.com/raderwerk/raderwerk-content/pull/7",
+                      [url for _, url, _ in client.attachments])
+
+    def test_the_pull_request_is_not_listed_twice(self):
+        client = self.only(FakeClient(dispatcher_user_id=DISPATCHER), "WV-207")
+        scheduler.run_cycle(self.context(client, FakeExecutor(a_result())), 1)
+        urls = [url for _, url, _ in client.attachments]
+        self.assertEqual(1, urls.count("https://github.com/raderwerk/raderwerk-content/pull/7"))
+
+    def test_a_refused_attachment_never_costs_the_claim_release(self):
+        """Linear weigert een bijlage op een url die een integratie al bezit.
+
+        Dat overkwam WV-210 letterlijk: de GitHub-koppeling had PR #2 zelf al
+        aan het issue gehangen, en de tweede poging kwam terug als "Unable to
+        create issue attachment". Die fout nam de rest van `finish` mee, dus de
+        claim bleef open en `run/bezet` bleef staan op een run die klaar was.
+        """
+        client = self.only(FakeClient(dispatcher_user_id=DISPATCHER), "WV-207")
+        client.fail_next("attachmentLinkURL", LinearError("Unable to create issue attachment"))
+        report = scheduler.run_cycle(self.context(client, FakeExecutor(a_result())), 1)
+
+        self.assertEqual((), report.errors)
+        issue = client.issue("WV-207")
+        self.assertIn("run/klaar", issue.labels)
+        self.assertNotIn("run/bezet", issue.labels)
+        self.assertEqual("Agentreview", issue.state_name)
+
+    def test_a_run_without_a_pull_request_keeps_its_evidence_untouched(self):
+        result = a_result(uitkomst="vraag", question="Welke bron?", pr_url=None, artifacts=())
+        self.assertEqual((), runs.with_pull_request(result))
+
+    def test_a_pull_request_url_without_a_number_still_gets_a_label(self):
+        result = a_result(pr_url="https://github.com/raderwerk/raderwerk-content/pull/kop",
+                          artifacts=())
+        self.assertEqual("pull request", runs.with_pull_request(result)[0].label)
 
 
 class FakeNative:

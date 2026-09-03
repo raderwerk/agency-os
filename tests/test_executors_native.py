@@ -200,6 +200,20 @@ class FallbackTests(NativeExecutorTestCase):
         self.assertIn("awaitingInput", body)
         self.assertIn("geen volwaardige dubbele review", body)
 
+    def test_the_fallback_swaps_the_busy_label_instead_of_stacking_it(self):
+        """`run/` is exclusief: `run/vastgelopen` erbij zonder `run/bezet` eraf faalt.
+
+        Het issue draagt op dit moment `run/bezet` van zijn eigen claim, dus
+        zonder de wissel weigert Linear deze hele update en blijft er van de
+        terugvalprocedure alleen een comment over.
+        """
+        issue = make_issue(labels=("dienst/content", "soort/contentstuk", "run/bezet"))
+        self.seed(make_session(status="error"))
+        self.executor.poll(self.client, self.receipt(strikes=1), issue)
+        update = self.client.updates[0]
+        self.assertEqual(update["removed_labels"], ["run/bezet"])
+        self.assertIn("run/vastgelopen", update["added_labels"])
+
     def test_every_stuck_status_counts_towards_the_fallback(self):
         for status in ("awaitingInput", "error", "stale"):
             with self.subTest(status=status):

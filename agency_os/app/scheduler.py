@@ -81,6 +81,13 @@ class Context:
     now: Callable[[], datetime] = _utcnow
     failures: MutableMapping[tuple[str, str], int] = field(default_factory=dict)
     receipts: MutableMapping[str, Any] = field(default_factory=dict)
+    #: Issues die in deze cyclus zijn afgerond. `result.watching` komt uit de poll
+    #: aan het begin van de cyclus en zegt daar nog `run/bezet`, terwijl
+    #: `collect_native` het label inmiddels op zijn eindwaarde heeft gezet.
+    #: Zonder deze verzameling ziet `_reconcile` een verweesde run die er niet is
+    #: en schrijft hij `run/wachtrij` over `run/klaar` heen -- twee labels uit de
+    #: exclusieve groep `run/`, dus Linear weigert die update ook nog.
+    handled: set[str] = field(default_factory=set)
 
 
 def build_context(
@@ -304,7 +311,8 @@ def _reconcile(ctx: Context, result: Any, errors: list[str]) -> int:
     """
     freed = 0
     for issue in result.watching:
-        if issue.id in ctx.receipts or ctx.store.open_claim(issue.id) is not None:
+        if (issue.id in ctx.receipts or issue.id in ctx.handled
+                or ctx.store.open_claim(issue.id) is not None):
             continue
         if ctx.only_issue and issue.identifier != ctx.only_issue:
             continue

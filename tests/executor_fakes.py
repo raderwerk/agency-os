@@ -56,6 +56,12 @@ class FakeIssue:
     def high_risk(self) -> bool:
         return self.risico == "hoog"
 
+    @property
+    def run_state(self) -> Optional[str]:
+        """Zoals op `IssueView`; de terugvalprocedure moet het run-label kunnen wisselen."""
+        return next((label[len("run/"):] for label in self.labels
+                     if label.startswith("run/")), None)
+
 
 @dataclass(frozen=True)
 class FakeActivity:

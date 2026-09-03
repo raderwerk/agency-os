@@ -311,7 +311,7 @@ class LinearClient:
             ActivityView(
                 id=a.get("id") or "",
                 type=str((a.get("content") or {}).get("type") or "response"),
-                body=str((a.get("content") or {}).get("body") or ""),
+                body=_activity_body(a.get("content") or {}),
                 created_at=_parse_dt(a.get("createdAt")),
             )
             for a in ((node.get("activities") or {}).get("nodes") or [])
@@ -326,7 +326,7 @@ class LinearClient:
             created_at=_parse_dt(node.get("createdAt")),
             updated_at=_parse_dt(node.get("updatedAt")),
             activities=activities,
-            pull_request_url=(pull_requests[0].get("url") if pull_requests else None),
+            pull_request_url=_first_pr_url(pull_requests),
         )
 
     # ---------------- writes ----------------
@@ -491,6 +491,33 @@ class LinearClient:
             entity_id=issue_id, summary={"issueId": issue_id, "url": url, "title": title},
             result_path=("attachmentLinkURL", "attachment"),
         )
+
+
+def _activity_body(content: Mapping[str, Any]) -> str:
+    """De leesbare tekst van één activiteit, welke variant van de union het ook is.
+
+    Vijf van de zes dragen `body`; `AgentActivityActionContent` draagt `result`
+    en `action`. `extract_pr_url` zoekt in deze tekst naar de PR-link, dus een
+    actie die de PR opende mag hier niet leeg uit vallen.
+    """
+    for key in ("body", "result", "action"):
+        value = content.get(key)
+        if value:
+            return str(value)
+    return ""
+
+
+def _first_pr_url(links: Sequence[Mapping[str, Any]]) -> Optional[str]:
+    """De eerste PR-url uit `agentSession.pullRequests`.
+
+    De koppeltabel `AgentSessionToPullRequest` draagt zelf geen `url`; die zit
+    een niveau dieper op `pullRequest`.
+    """
+    for link in links:
+        url = ((link.get("pullRequest") or {}).get("url")) or link.get("url")
+        if url:
+            return str(url)
+    return None
 
 
 def _label_id(labels: Mapping[str, str], name: str) -> str:

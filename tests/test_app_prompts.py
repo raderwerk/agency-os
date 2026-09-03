@@ -3,10 +3,19 @@
 from __future__ import annotations
 
 import unittest
+from datetime import datetime, timezone
 
 from tests.fakes import make_issue
 
-from agency_os.app.prompts import OUTPUT_CONTRACT, acceptance_criteria, build_prompt, dod_items
+from agency_os.app.prompts import (
+    DISCUSSION_BUDGET,
+    OUTPUT_CONTRACT,
+    acceptance_criteria,
+    build_prompt,
+    discussion_block,
+    dod_items,
+)
+from agency_os.linear.models import CommentView
 from agency_os.app.routing import load_table
 
 TABLE = load_table()
@@ -25,6 +34,50 @@ Schrijf iets.
 - [ ] Artefact staat in de repo
 - [x] Test is groen
 """
+
+
+def a_comment(body: str, *, minute: int = 0, who: str = "Youp") -> CommentView:
+    return CommentView(id=f"c-{minute}", body=body,
+                       created_at=datetime(2026, 9, 3, 11, minute, tzinfo=timezone.utc),
+                       author_id="user-mens", author_name=who, author_is_app=False)
+
+
+class DiscussionBlockTest(unittest.TestCase):
+    """Zonder dit blok bereikt het antwoord van een mens de volgende run nooit."""
+
+    def setUp(self) -> None:
+        self.issue = make_issue()
+        self.role = TABLE.roles["redacteur"]
+
+    def test_the_thread_ends_up_in_the_prompt_after_the_rules_and_the_issue(self):
+        prompt = build_prompt(Cfg(), self.role, self.issue, run_id="a1b2c3",
+                              discussion=[a_comment("Bron voor het prijsmodel: XS is EUR 250.")])
+        self.assertIn("Bron voor het prijsmodel: XS is EUR 250.", prompt)
+        self.assertLess(prompt.index("Onwrikbare regels"), prompt.index("Discussie op het issue"))
+        self.assertLess(prompt.index("WV-207"), prompt.index("Discussie op het issue"))
+
+    def test_a_claim_comment_carries_nothing_and_is_left_out(self):
+        block = discussion_block([a_comment("**Spil** claim 22b519 op 2026-09-03 13:06"),
+                                  a_comment("Een echt antwoord.", minute=1)])
+        self.assertNotIn("claim 22b519", block)
+        self.assertIn("Een echt antwoord.", block)
+
+    def test_the_oldest_comments_drop_out_first_when_the_budget_runs_out(self):
+        long_one = "x" * (DISCUSSION_BUDGET // 2)
+        block = discussion_block([a_comment("HET OUDSTE", minute=0),
+                                  a_comment(long_one, minute=1),
+                                  a_comment(long_one, minute=2)])
+        self.assertNotIn("HET OUDSTE", block, "het antwoord van vandaag weegt zwaarder")
+        self.assertIn("weggelaten", block)
+
+    def test_the_thread_reads_oldest_first(self):
+        block = discussion_block([a_comment("EERST", minute=1), a_comment("DAARNA", minute=2)])
+        self.assertLess(block.index("EERST"), block.index("DAARNA"))
+
+    def test_no_comments_means_no_block(self):
+        self.assertEqual("", discussion_block([]))
+        self.assertNotIn("Discussie op het issue",
+                         build_prompt(Cfg(), self.role, self.issue, run_id="a1b2c3"))
 
 
 class Cfg:

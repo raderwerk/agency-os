@@ -143,6 +143,31 @@ class ReviewerFamilyTest(unittest.TestCase):
                     f"{maker} en de reviewer draaien op dezelfde familie; dat is precies de "
                     "kwaliteitsmaatregel die de roster niet wil verliezen")
 
+    def test_an_agent_label_on_the_issue_cannot_pick_the_reviewer(self):
+        """`agent/<model>` zegt wie het werk maakt, niet wie het beoordeelt.
+
+        WV-210 draagt `agent/fable`. Zonder deze regel zette dat label de
+        reviewer op de Claude-familie -- dezelfde familie als de bouwer -- terwijl
+        de laan `codex-cli` bleef. Er draaide dan GPT-5.6 terwijl het Kostenboek
+        `claude-opus-5` boekte tegen de prijs van Opus.
+        """
+        for label, verwacht in (("agent/fable", "codex-cli"), ("agent/opus", "codex-cli"),
+                                ("agent/codex", "codex-cli"), ("agent/cursor", "codex-cli")):
+            with self.subTest(label=label):
+                issue = make_issue(state_name="Agentreview", labels=("dienst/content", label))
+                route = routing.decide(TABLE, issue, allow_fable=True)
+                self.assertEqual(route.role.key, "reviewer")
+                self.assertEqual(route.model_key, verwacht)
+                self.assertEqual(route.executor_name, "codex-cli")
+                self.assertIn("genegeerd", route.reason)
+
+    def test_a_building_role_still_follows_the_agent_label(self):
+        issue = make_issue(state_name="Ingepland",
+                           labels=("soort/contentstuk", "agent/fable"))
+        route = routing.decide(TABLE, issue, allow_fable=True)
+        self.assertEqual(route.role.key, "redacteur")
+        self.assertEqual(route.model_key, "fable")
+
     def test_the_reviewer_lane_finishes_inside_the_same_cycle(self):
         self.assertNotIn(TABLE.roles["reviewer"].default_model, routing.NATIVE_MODELS,
                          "een cloudsessie levert haar oordeel pas cycli later")
