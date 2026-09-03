@@ -46,6 +46,12 @@ MODELS: Mapping[str, ModelSpec] = {
     "opus": ModelSpec("opus", "Claude Opus 5", "claude-opus-5", "claude", "claude"),
     "sonnet": ModelSpec("sonnet", "Claude Sonnet 5", "claude-sonnet-5", "claude", "claude"),
     "codex": ModelSpec("codex", "Codex GPT-5.6 Sol xhigh", "gpt-5.6-sol", "openai", "native-codex"),
+    # Hetzelfde model als `codex`, maar via de lokale CLI in plaats van een
+    # mention in Linear. De reviewer heeft die variant nodig: hij moet binnen
+    # dezelfde cyclus een oordeel geven, en een cloudsessie levert dat pas cycli
+    # later. Staat daarom bewust niet in NATIVE_MODELS.
+    "codex-cli": ModelSpec("codex-cli", "Codex GPT-5.6 Sol xhigh (CLI)", "gpt-5.6-sol",
+                           "openai", "codex-cli"),
     "cursor": ModelSpec("cursor", "Cursor Grok 4.6", "cursor-grok-4.6-high-fast", "xai", "native-cursor"),
 }
 

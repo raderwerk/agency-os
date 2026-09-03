@@ -140,7 +140,15 @@ class CodexCliReviewer:
     # -- onderdelen --------------------------------------------------------
 
     def _command(self) -> list[str]:
-        """De vaste aanroep uit sectie 10.3; de prompt komt via stdin ('-')."""
+        """De aanroep uit sectie 10.3; de prompt komt via stdin ('-').
+
+        Zonder `--search`, en dat is geen bezuiniging: `codex exec` van
+        codex-cli 0.147.0 kent die vlag niet en stopt met `error: unexpected
+        argument '--search' found` en afloopcode 2. Deze laan was daarmee in elke
+        versie van deze repo een run die gegarandeerd mislukte. Een reviewer
+        beoordeelt bovendien een diff die hij volledig meekrijgt, dus hij heeft
+        het web niet nodig.
+        """
         return [
             self.cfg.codex_bin,
             "exec",
@@ -150,7 +158,6 @@ class CodexCliReviewer:
             f"model_reasoning_effort={self.cfg.codex_reasoning_effort}",
             "-c",
             "notify=[]",
-            "--search",
             "-",
         ]
 

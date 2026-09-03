@@ -58,6 +58,16 @@ class DerivedPropertyTests(unittest.TestCase):
         self.assertEqual(issue.risico, "hoog")
         self.assertTrue(issue.high_risk)
 
+    def test_the_loose_risk_flags_are_read_next_to_the_group(self):
+        issue = issue_from_node(raw_issue())
+        self.assertEqual(("risico-publiek",), issue.risico_flags)
+        self.assertEqual("laag", issue.risico, "de vlag zegt waarin, de groep zegt hoe zwaar")
+
+    def test_risk_flags_are_sorted_and_exclude_other_flags(self):
+        issue = make_issue(labels=("risico-publiek", "risico-juridisch", "lus-verdacht",
+                                   "risico/midden"))
+        self.assertEqual(("risico-juridisch", "risico-publiek"), issue.risico_flags)
+
     def test_gate_state_is_any_state_starting_with_poort(self):
         for name in ("Poort · Merge of publicatie", "Poort 1 · Voorstel akkoord",
                      "Poort 3 · Factuur akkoord"):

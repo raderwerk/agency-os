@@ -10,4 +10,4 @@ Je schrijft de tekst zelf, in de merkstem van de klant, en je levert markdown in
 
 **Mag niet** Publiceren. Cijfers, citaten of bronnen verzinnen. Een statistiek opnemen zonder werkende link. Een DoD-punt afvinken zonder de bronlink zelf te hebben geopend.
 
-**Stopt bij** Poort · Merge of publicatie. Bij `risico/publiek` is een genoemde menselijke eindredacteur verplicht; noem die naam in je comment of stel er één vraag over.
+**Stopt bij** Poort · Merge of publicatie. Bij `risico-publiek` is een genoemde menselijke eindredacteur verplicht; noem die naam in je comment of stel er één vraag over. Dat label is een losse vlag, geen waarde in de groep `risico/`: een issue kan `risico/laag` én `risico-publiek` dragen.

@@ -64,6 +64,23 @@ class PrecedenceTest(ConfigTestCase):
             self.load(SPIL_LINEAR_API_KEY="lin_api_anders").linear_api_key_source,
         )
 
+    def test_key_file_is_read_when_the_key_itself_is_absent(self):
+        key_file = Path(self.tmp.name) / "api_key"
+        key_file.write_text("lin_api_uit_een_bestand\n", encoding="utf-8")
+        self.write_file(**{k: v for k, v in REQUIRED.items() if k != "SPIL_LINEAR_API_KEY"},
+                        SPIL_LINEAR_API_KEY_FILE=str(key_file))
+        cfg = self.load()
+        self.assertEqual("lin_api_uit_een_bestand", cfg.linear_api_key)
+        self.assertEqual(f"bestand:{key_file}", cfg.linear_api_key_source)
+
+    def test_the_key_itself_beats_the_key_file(self):
+        key_file = Path(self.tmp.name) / "api_key"
+        key_file.write_text("lin_api_uit_een_bestand\n", encoding="utf-8")
+        self.write_file(**REQUIRED, SPIL_LINEAR_API_KEY_FILE=str(key_file))
+        cfg = self.load()
+        self.assertEqual("lin_api_geheim", cfg.linear_api_key)
+        self.assertEqual(f"file:{self.env_file}", cfg.linear_api_key_source)
+
     def test_derived_paths_hang_under_the_state_dir(self):
         self.write_file(**REQUIRED)
         cfg = self.load()
@@ -77,6 +94,22 @@ class FatalTest(ConfigTestCase):
         with self.assertRaises(ConfigError) as caught:
             self.load()
         self.assertIn("SPIL_LINEAR_API_KEY", str(caught.exception))
+
+    def test_an_unreadable_key_file_is_fatal(self):
+        self.write_file(**{k: v for k, v in REQUIRED.items() if k != "SPIL_LINEAR_API_KEY"},
+                        SPIL_LINEAR_API_KEY_FILE=str(Path(self.tmp.name) / "bestaat-niet"))
+        with self.assertRaises(ConfigError) as caught:
+            self.load()
+        self.assertIn("SPIL_LINEAR_API_KEY_FILE", str(caught.exception))
+
+    def test_an_empty_key_file_is_fatal(self):
+        key_file = Path(self.tmp.name) / "api_key"
+        key_file.write_text("\n", encoding="utf-8")
+        self.write_file(**{k: v for k, v in REQUIRED.items() if k != "SPIL_LINEAR_API_KEY"},
+                        SPIL_LINEAR_API_KEY_FILE=str(key_file))
+        with self.assertRaises(ConfigError) as caught:
+            self.load()
+        self.assertIn("leeg", str(caught.exception))
 
     def test_missing_fx_is_fatal(self):
         for missing in ("SPIL_FX_USD_EUR", "SPIL_FX_SOURCE", "SPIL_FX_DATE"):

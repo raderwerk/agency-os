@@ -80,8 +80,10 @@ class ReviewerTests(unittest.TestCase):
         self.assertEqual(
             self.calls[0]["cmd"],
             ["codex", "exec", "-m", "gpt-5.6-sol", "-c", "model_reasoning_effort=xhigh",
-             "-c", "notify=[]", "--search", "-"],
+             "-c", "notify=[]", "-"],
         )
+        self.assertNotIn("--search", self.calls[0]["cmd"],
+                         "codex exec 0.147.0 kent die vlag niet en stopt met afloopcode 2")
         stdin = self.calls[0]["stdin_text"]
         self.assertIn("Doe het werk uit het issue.", stdin)
         self.assertIn("## Diff van PR #7", stdin)

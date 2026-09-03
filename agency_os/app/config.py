@@ -178,6 +178,7 @@ def _load(overrides: Mapping[str, str]) -> Config:
             raise ConfigError(f"{key} ontbreekt (env, {env_file} of commandoregel)")
         return value
 
+    api_key, api_key_source = _read_api_key(get, source, env_file)
     state_dir = Path(need("SPIL_STATE_DIR")).expanduser()
     repo_root = Path(get("SPIL_REPO_ROOT") or str(ExecutorConfig().repo_root)).expanduser()
     worktree_root = Path(get("SPIL_WORKTREE_ROOT") or str(repo_root / ".worktrees")).expanduser()
@@ -209,8 +210,8 @@ def _load(overrides: Mapping[str, str]) -> Config:
             f"kreeg {worktree_root}")
 
     cfg = Config(
-        linear_api_key=need("SPIL_LINEAR_API_KEY"),
-        linear_api_key_source=source("SPIL_LINEAR_API_KEY") or "onbekend",
+        linear_api_key=api_key,
+        linear_api_key_source=api_key_source,
         linear_endpoint=need("SPIL_LINEAR_ENDPOINT"),
         dispatcher_user_id=need("SPIL_DISPATCHER_USER_ID"),
         approver_ids=_as_ids(need("SPIL_APPROVER_IDS")),
@@ -234,6 +235,35 @@ def _load(overrides: Mapping[str, str]) -> Config:
     if not cfg.approver_ids:
         raise ConfigError("SPIL_APPROVER_IDS is leeg: zonder goedkeurders kan geen poort open")
     return cfg
+
+
+def _read_api_key(get, source, env_file: Path) -> tuple[str, str]:
+    """De sleutel zelf, of de inhoud van het bestand waar `*_FILE` naar wijst.
+
+    De sleutel staat al op deze machine in `~/.config/linear/api_key`. Hem ook
+    in `spil.env` zetten maakt een tweede kopie van een levend geheim, en die
+    twee lopen uit elkaar zodra er één geroteerd wordt. `SPIL_LINEAR_API_KEY`
+    wint als hij gezet is; anders wordt het pad gelezen. De inhoud wordt nooit
+    geprint, alleen de herkomst.
+    """
+    direct = get("SPIL_LINEAR_API_KEY")
+    if direct:
+        return direct, source("SPIL_LINEAR_API_KEY") or "onbekend"
+
+    key_path = get("SPIL_LINEAR_API_KEY_FILE")
+    if not key_path:
+        raise ConfigError(
+            "SPIL_LINEAR_API_KEY of SPIL_LINEAR_API_KEY_FILE ontbreekt "
+            f"(env, {env_file} of commandoregel)"
+        )
+    path = Path(key_path).expanduser()
+    try:
+        value = path.read_text(encoding="utf-8").strip()
+    except OSError as exc:
+        raise ConfigError(f"SPIL_LINEAR_API_KEY_FILE {path} is niet te lezen: {exc}") from exc
+    if not value:
+        raise ConfigError(f"SPIL_LINEAR_API_KEY_FILE {path} is leeg")
+    return value, f"bestand:{path}"
 
 
 def _as_bool(value: Optional[str]) -> bool:

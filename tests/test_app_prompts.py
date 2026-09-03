@@ -45,6 +45,14 @@ class SectionTest(unittest.TestCase):
         text = "## Acceptatiecriteria\n\n- een\n\n## Kaders\n\n- niet dit\n"
         self.assertEqual(["een"], acceptance_criteria(text))
 
+    def test_a_heading_with_a_qualifier_is_the_same_section(self):
+        text = "## Definition of Done (dienstlijn content, sjabloon `Contentstuk`)\n\n- [ ] een\n"
+        self.assertEqual(["een"], dod_items(text))
+
+    def test_a_heading_that_only_mentions_the_words_is_not_the_section(self):
+        text = "## Definition of Done is hier niet van toepassing\n\n- niet dit\n"
+        self.assertEqual([], dod_items(text))
+
 
 class BuildPromptTest(unittest.TestCase):
     def setUp(self) -> None:
@@ -75,6 +83,46 @@ class BuildPromptTest(unittest.TestCase):
         self.assertIn("Regels van de repo", prompt)
         self.assertIn("## Afkeurreden", prompt)
         self.assertIn("te lang", prompt)
+
+    def test_a_role_with_a_pr_is_told_to_commit_and_not_to_push(self):
+        prompt = build_prompt(Cfg(), self.role, self.issue, run_id="a1b2c3",
+                              branch="feat/WV-207-publiek-bouwlogboek", base_branch="main")
+        self.assertIn("## Werkmap", prompt)
+        self.assertIn("feat/WV-207-publiek-bouwlogboek", prompt)
+        self.assertIn("Commit je werk", prompt)
+        self.assertIn("De Spil pusht de branch", prompt)
+        self.assertLess(prompt.index("## Werkmap"), prompt.index("## Uitvoercontract"),
+                        "de werkmap staat vóór het uitvoercontract, niet erachter")
+
+    def test_a_reviewing_role_is_told_to_change_nothing(self):
+        prompt = build_prompt(Cfg(), TABLE.roles["reviewer"], self.issue, run_id="a1b2c3",
+                              branch="feat/WV-207-publiek-bouwlogboek")
+        self.assertIn("## Werkmap", prompt)
+        self.assertIn("Wijzig niets", prompt)
+        self.assertNotIn("Commit je werk", prompt)
+
+    def test_the_dod_falls_back_to_the_repo_when_the_issue_names_a_template(self):
+        agents = ("# AGENTS.md\n\n## Definition of Done (dienstlijn content)\n\n"
+                  "- [ ] Tekst staat als markdown in de repo\n- [ ] Bronlinks werken\n")
+        issue = make_issue(description="## Definition of Done\n\nVolgt het sjabloon `Contentstuk`.\n")
+        prompt = build_prompt(Cfg(), self.role, issue, run_id="a1b2c3",
+                              extra_context={"agents_md": agents})
+        self.assertIn("Definition of Done (uit AGENTS.md van de repo)", prompt)
+        self.assertIn("- [ ] Bronlinks werken", prompt)
+        self.assertNotIn("Definition of Done: niet in het issue gevonden", prompt)
+        self.assertIn("(2 punten)", prompt)
+
+    def test_the_issues_own_dod_beats_the_repo_fallback(self):
+        agents = "## Definition of Done\n\n- [ ] Uit de repo\n"
+        issue = make_issue(description="## Definition of Done\n\n- [ ] Uit het issue\n")
+        prompt = build_prompt(Cfg(), self.role, issue, run_id="a1b2c3",
+                              extra_context={"agents_md": agents})
+        self.assertIn("Definition of Done (uit het issue)", prompt)
+        self.assertIn("- [ ] Uit het issue", prompt)
+
+    def test_a_role_without_a_worktree_gets_no_workspace_block(self):
+        prompt = build_prompt(Cfg(), TABLE.roles["account"], self.issue, run_id="a1b2c3")
+        self.assertNotIn("## Werkmap", prompt)
 
     def test_an_issue_without_criteria_gets_told_to_ask(self):
         prompt = build_prompt(Cfg(), self.role, make_issue(description="Doe iets", contract=None), run_id="a1b2c3")

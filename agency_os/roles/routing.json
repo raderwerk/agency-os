@@ -22,8 +22,8 @@
       "done_state": "Agentreview", "needs_worktree": true, "needs_pr": true
     },
     "reviewer": {
-      "title": "Reviewer 1", "prompt_file": "reviewer.md", "default_model": "opus",
-      "family": "claude", "executor": "claude", "working_state": "Agentreview",
+      "title": "Reviewer 1", "prompt_file": "reviewer.md", "default_model": "codex-cli",
+      "family": "openai", "executor": "codex-cli", "working_state": "Agentreview",
       "done_state": "QA op preview", "needs_worktree": true, "needs_pr": false
     },
     "qa": {

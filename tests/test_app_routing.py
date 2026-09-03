@@ -131,6 +131,23 @@ class TableValidationTest(unittest.TestCase):
                 load_table(path)
 
 
+class ReviewerFamilyTest(unittest.TestCase):
+    """agent-roster.md sectie 3: de reviewer is altijd een andere modelfamilie."""
+
+    def test_the_reviewer_is_not_the_family_that_did_the_building(self):
+        reviewer = routing.MODELS[TABLE.roles["reviewer"].default_model]
+        for maker in ("redacteur", "ontwikkelaar", "ontwerper", "campagneplanner"):
+            with self.subTest(rol=maker):
+                self.assertNotEqual(
+                    reviewer.family, routing.MODELS[TABLE.roles[maker].default_model].family,
+                    f"{maker} en de reviewer draaien op dezelfde familie; dat is precies de "
+                    "kwaliteitsmaatregel die de roster niet wil verliezen")
+
+    def test_the_reviewer_lane_finishes_inside_the_same_cycle(self):
+        self.assertNotIn(TABLE.roles["reviewer"].default_model, routing.NATIVE_MODELS,
+                         "een cloudsessie levert haar oordeel pas cycli later")
+
+
 class LoopGuardTest(unittest.TestCase):
     def test_second_run_of_the_same_role_on_one_day_is_refused(self):
         with tempfile.TemporaryDirectory() as tmp:

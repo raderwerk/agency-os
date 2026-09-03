@@ -231,6 +231,8 @@ def request_for(ctx: Any, job: Job) -> Any:
     """De opdracht voor B: prompt, repo, branch en de grenzen eromheen."""
     role, issue = job.route.role, job.issue
     contract = getattr(issue, "contract", None)
+    base_branch = getattr(contract, "basisbranch", None) or "main"
+    branch = worktree.branch_name(issue.identifier, issue.title) if role.needs_worktree else ""
     return executors.ExecutionRequest(
         run_id=job.run_id,
         issue=issue,
@@ -239,10 +241,11 @@ def request_for(ctx: Any, job: Job) -> Any:
         model_key=job.route.model_key,
         model_display=job.route.model.display,
         model_ledger=job.route.model.ledger,
-        prompt=prompts.build_prompt(ctx.cfg, role, issue, run_id=job.run_id),
+        prompt=prompts.build_prompt(ctx.cfg, role, issue, run_id=job.run_id,
+                                    branch=branch, base_branch=base_branch),
         repo=issue.repo,
-        base_branch=getattr(contract, "basisbranch", None) or "main",
-        branch=worktree.branch_name(issue.identifier, issue.title) if role.needs_worktree else "",
+        base_branch=base_branch,
+        branch=branch,
         needs_worktree=role.needs_worktree,
         needs_pr=role.needs_pr,
         pr_title=f"{issue.identifier}: {issue.title}",
@@ -375,6 +378,7 @@ def gate_card(ctx: Any, job: Job, result: Any, run: RunRecord) -> str:
         criteria="\n".join(f"- {item}" for item in criteria) or "geen acceptatiecriteria in het issue",
         reviewers=f"{job.route.role.title} op {job.route.model.display}",
         disagreement="geen tweede oordeel in deze run",
+        risk_flags=job.issue.risico_flags,
         risk=job.issue.risico,
         cost_so_far=f"€ {run.kosten_eur:.2f}",
         high_risk=job.issue.high_risk,

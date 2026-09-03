@@ -32,7 +32,7 @@ Eerst een `~/.config/raderwerk/spil.env`. Zes sleutels hebben geen standaardwaar
 ```bash
 mkdir -p ~/.config/raderwerk && chmod 700 ~/.config/raderwerk
 cat > ~/.config/raderwerk/spil.env <<'EOF'
-SPIL_LINEAR_API_KEY=lin_api_...
+SPIL_LINEAR_API_KEY_FILE=~/.config/linear/api_key
 SPIL_DISPATCHER_USER_ID=<uuid van het account waarmee de Spil schrijft>
 SPIL_APPROVER_IDS=<uuid>,<uuid>
 SPIL_FX_USD_EUR=0.92
@@ -42,6 +42,8 @@ SPIL_REPO_ROOT=~/Developer/Personal/Raderwerk
 EOF
 chmod 600 ~/.config/raderwerk/spil.env
 ```
+
+De sleutel staat op deze machine al in `~/.config/linear/api_key`, waar `hq/tools` hem ook leest. `SPIL_LINEAR_API_KEY_FILE` wijst daarheen in plaats van hem over te schrijven: twee kopieën van hetzelfde levende geheim lopen uit elkaar zodra er één geroteerd wordt. Wie de sleutel liever rechtstreeks zet gebruikt `SPIL_LINEAR_API_KEY`; die wint altijd van het pad.
 
 De uuids haal je uit de workspace zelf: `viewer { id }` is de dispatcher, en de goedkeurders zijn de mensen uit D02. Draaien de Spil en de goedkeurder onder hetzelfde account, dan kan de Spil zijn eigen poort niet openen -- dat is de bedoeling, maar het betekent ook dat het akkoord-kanaal pas te demonstreren is met een eigen sleutel voor de dispatcher.
 
@@ -80,7 +82,8 @@ Volgorde van winnen: vlaggen op de commandoregel, dan `os.environ`, dan `~/.conf
 
 | Sleutel | Standaard | |
 |---|---|---|
-| `SPIL_LINEAR_API_KEY` | — | verplicht; header is `Authorization: <sleutel>`, zonder `Bearer` |
+| `SPIL_LINEAR_API_KEY` | — | de sleutel zelf; header is `Authorization: <sleutel>`, zonder `Bearer` |
+| `SPIL_LINEAR_API_KEY_FILE` | — | pad naar een bestand met die sleutel. Eén van de twee is verplicht; de sleutel zelf wint |
 | `SPIL_DISPATCHER_USER_ID` | — | verplicht; het account waarmee de Spil schrijft |
 | `SPIL_APPROVER_IDS` | — | verplicht; komma-gescheiden Linear-user-uuids uit D02 |
 | `SPIL_FX_USD_EUR`, `SPIL_FX_SOURCE`, `SPIL_FX_DATE` | — | verplicht; er staat geen koers in de code |

@@ -237,6 +237,18 @@ class IssueView:
         return self.label_in_group("risico") or "laag"
 
     @property
+    def risico_flags(self) -> tuple[str, ...]:
+        """De ongegroepeerde risicovlaggen, gesorteerd: `risico-publiek`, ...
+
+        De werkplaats kent twee soorten risicolabels naast elkaar: de groep
+        `risico/` zegt hoe zwaar, de losse vlaggen `risico-publiek`,
+        `risico-juridisch` en `risico-klantdata` zeggen waarin. Een issue kan het
+        tweede dragen zonder het eerste, en dan zegt `risico` "laag" over iets dat
+        publiek gaat. Wie de poortkaart leest hoort beide te zien.
+        """
+        return tuple(sorted(label for label in self.flags if label.startswith("risico-")))
+
+    @property
     def agent_hint(self) -> Optional[str]:
         return self.label_in_group("agent")
 

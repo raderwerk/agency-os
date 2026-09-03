@@ -118,7 +118,8 @@ def run_comment(*, role_title: str, model_display: str, run: RunRecord, body_md:
 
 def gate_card(*, gate_no: str, issue, what: str, evidence: Sequence[Artifact], criteria: str,
               reviewers: str, disagreement: str, risk: str, cost_so_far: str, high_risk: bool,
-              run_id: str, duration_s: float, cost_eur: float) -> str:
+              run_id: str, duration_s: float, cost_eur: float,
+              risk_flags: Sequence[str] = ()) -> str:
     """De poortkaart van spec 7.3.
 
     De tokens staan midden in de tekst op eigen regels, nooit op regel 1: een
@@ -129,6 +130,12 @@ def gate_card(*, gate_no: str, issue, what: str, evidence: Sequence[Artifact], c
         "AKKOORD RISICO-GEZIEN\nAFGEKEURD: <reden>" if high_risk else "AKKOORD\nAFGEKEURD: <reden>"
     )
     risk_line = f"**Risico** {risk}"
+    if risk_flags:
+        # De losse `risico-*`-vlaggen staan naast de groep `risico/`, niet erin.
+        # Zonder deze regel meldt de kaart "Risico laag" op een issue dat
+        # `risico-publiek` draagt, en dat is precies het punt waarop een mens
+        # moet weten dat er iets naar buiten gaat.
+        risk_line += f" · {', '.join(f'`{flag}`' for flag in risk_flags)}"
     if high_risk:
         risk_line += (
             "\n\nDit issue draagt `risico/hoog`. Een kaal AKKOORD wordt geweigerd: het token "

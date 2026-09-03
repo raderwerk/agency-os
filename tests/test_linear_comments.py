@@ -11,12 +11,13 @@ from tests.support_linear import T0, make_issue, make_run
 WHEN = datetime(2026, 9, 3, 9, 14, tzinfo=timezone.utc)
 
 
-def a_gate_card(high_risk=False):
+def a_gate_card(high_risk=False, risk_flags=()):
     return comments.gate_card(
         gate_no="merge", issue=make_issue(), what="De PR mag gemerged worden.",
         evidence=(), criteria="6 van 6 gehaald", reviewers="Reviewer 1: goedkeuren",
         disagreement="geen", risk="risico/midden", cost_so_far="€ 4,12 over 3 runs",
-        high_risk=high_risk, run_id="3f9a2c", duration_s=12, cost_eur=0.02)
+        high_risk=high_risk, run_id="3f9a2c", duration_s=12, cost_eur=0.02,
+        risk_flags=risk_flags)
 
 
 class TimeTests(unittest.TestCase):
@@ -77,6 +78,14 @@ class GateCardTests(unittest.TestCase):
         self.assertNotIn("\nAKKOORD\n", card)
         self.assertIn("Een kaal AKKOORD wordt geweigerd", card)
         assert_not_gate_opening(card, author_is_agent=True)
+
+    def test_the_loose_risk_flags_stand_next_to_the_severity(self):
+        card = a_gate_card(risk_flags=("risico-juridisch", "risico-publiek"))
+        self.assertIn("**Risico** risico/midden · `risico-juridisch`, `risico-publiek`", card)
+        assert_not_gate_opening(card, author_is_agent=True)
+
+    def test_without_flags_the_risk_line_stays_as_it_was(self):
+        self.assertIn("**Risico** risico/midden\n", a_gate_card())
 
     def test_the_card_has_the_sections_of_spec_7_3(self):
         card = a_gate_card()

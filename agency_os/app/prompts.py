@@ -60,16 +60,20 @@ def build_prompt(
     issue: Any,
     *,
     run_id: str,
+    branch: str = "",
+    base_branch: str = "main",
     extra_context: Mapping[str, str] | None = None,
 ) -> str:
     """Stelt de volledige prompt samen voor één run van één rol op één issue."""
     extra = dict(extra_context or {})
+    agents_md, agents_note = _agents_md(cfg, issue, override=extra.pop("agents_md", None))
     blocks = [
         _read(SKELETON_FILE),
         _read(role.prompt_path),
         _issue_block(issue, role=role, run_id=run_id),
-        _criteria_block(issue.description or ""),
-        _repo_block(cfg, issue, override=extra.pop("agents_md", None)),
+        _criteria_block(issue.description or "", agents_md=agents_md),
+        _repo_block(issue, agents_md, agents_note),
+        _workspace_block(role, issue, branch=branch, base_branch=base_branch),
         OUTPUT_CONTRACT,
     ]
     blocks.extend(f"## {title}\n\n{body}" for title, body in extra.items())
@@ -111,38 +115,104 @@ def _issue_block(issue: Any, *, role: RoleSpec, run_id: str) -> str:
     return "\n".join(lines)
 
 
-def _criteria_block(description: str) -> str:
+def _criteria_block(description: str, *, agents_md: str = "") -> str:
+    """De criteria en de DoD, met de dienstlijn-DoD uit AGENTS.md als terugval.
+
+    Een issue dat naar een sjabloon verwijst ("Volgt het sjabloon `Contentstuk`")
+    heeft geen eigen DoD-lijst. Zonder de terugval zei dit blok dan "niet
+    gevonden, vraag ernaar" terwijl de lijst twee schermen lager in het
+    repo-blok van dezelfde prompt staat -- en regel 6 maakt van zo'n run een
+    vraag in plaats van werk.
+    """
     criteria = acceptance_criteria(description)
     dod = dod_items(description)
+    dod_source = "het issue"
+    if not dod and agents_md:
+        dod = dod_items(agents_md)
+        dod_source = "AGENTS.md van de repo"
     lines = ["## Acceptatiecriteria en Definition of Done", ""]
     if criteria:
         lines += ["Acceptatiecriteria:", ""] + [f"{i}. {item}" for i, item in enumerate(criteria, 1)] + [""]
     else:
         lines += ["Acceptatiecriteria: niet in het issue gevonden. Vraag ernaar in plaats van ze te verzinnen.", ""]
     if dod:
-        lines += ["Definition of Done:", ""] + [f"- [ ] {item}" for item in dod]
+        lines += [f"Definition of Done (uit {dod_source}):", ""] + [f"- [ ] {item}" for item in dod]
     else:
         lines += ["Definition of Done: niet in het issue gevonden. Vraag ernaar."]
     lines += ["", f"Vink alleen af wat je met een link in dezelfde comment kunt bewijzen ({len(dod)} punten)."]
     return "\n".join(lines)
 
 
-def _repo_block(cfg: Any, issue: Any, *, override: Optional[str]) -> str:
-    """De AGENTS.md van de doelrepo, uit de lokale clone onder `repo_root`."""
+def _agents_md(cfg: Any, issue: Any, *, override: Optional[str]) -> tuple[str, str]:
+    """De AGENTS.md van de doelrepo, plus waar hij vandaan komt.
+
+    Geeft `("", "")` als het issue geen repo noemt. Ontbreekt het bestand, dan
+    is de tekst leeg en zegt de notitie waar er gekeken is.
+    """
     repo = getattr(issue, "repo", None)
     if override:
-        return f"## Repo-instructies ({repo or 'onbekend'})\n\n{override}"
+        return override, ""
     if not repo:
-        return ""
+        return "", ""
     root = Path(getattr(cfg.executors, "repo_root", Path.home()))
     agents = root / repo.split("/")[-1] / "AGENTS.md"
     text = _read(agents)
-    if not text:
-        return (
-            f"## Repo-instructies ({repo})\n\n"
-            f"Niet gevonden op {agents}. Lees AGENTS.md in de worktree voordat je iets wijzigt."
+    return (text, f"uit {agents.name}") if text else ("", str(agents))
+
+
+def _repo_block(issue: Any, agents_md: str, note: str) -> str:
+    """De repo-instructies, of de mededeling dat ze niet lokaal stonden."""
+    repo = getattr(issue, "repo", None)
+    if agents_md:
+        heading = f"{repo or 'onbekend'}, {note}" if note else (repo or "onbekend")
+        return f"## Repo-instructies ({heading})\n\n{agents_md}"
+    if not repo:
+        return ""
+    return (
+        f"## Repo-instructies ({repo})\n\n"
+        f"Niet gevonden op {note}. Lees AGENTS.md in de worktree voordat je iets wijzigt."
+    )
+
+
+def _workspace_block(role: RoleSpec, issue: Any, *, branch: str, base_branch: str) -> str:
+    """Waar het model draait en wie de branch pusht.
+
+    Zonder dit blok weet een rol met een werkmap niet dat hij er al in staat, en
+    vooral niet dát hij moet committen: de Spil pusht wat er gecommit is, en
+    `has_commits_ahead` maakt van een werkmap vol ongecommitte wijzigingen een
+    mislukte run zonder pull request. Dat is precies de eerste manier waarop een
+    live run stukloopt, en het stond nergens in de prompt.
+    """
+    if not role.needs_worktree:
+        return ""
+    lines = [
+        "## Werkmap",
+        "",
+        f"- Repo: {issue.repo or 'onbekend'}",
+        f"- Basisbranch: {base_branch}",
+    ]
+    if branch:
+        lines.append(f"- Branch: {branch}")
+    lines += [
+        "",
+        "Je huidige map is de git-werkmap voor dit issue en staat al op die branch. "
+        "Vertak niet, wissel niet van map en werk nergens anders.",
+        "",
+    ]
+    if role.needs_pr:
+        lines.append(
+            "Commit je werk in deze werkmap, met Engelse commitberichten. De Spil pusht de "
+            "branch en opent daarna de pull request; `git push` en `gh` zijn voor jou "
+            "uitgeschakeld en je hebt ze niet nodig. Laat je wijzigingen ongecommit staan, "
+            "dan is er niets om te pushen, komt er geen pull request en telt de run als "
+            "mislukt."
         )
-    return f"## Repo-instructies ({repo}, uit {agents.name})\n\n{text}"
+    else:
+        lines.append(
+            "Je beoordeelt hier alleen. Wijzig niets, commit niets en push niets: het werk "
+            "dat je bekijkt staat al op deze branch."
+        )
+    return "\n".join(lines)
 
 
 _HEADING = re.compile(r"^\s{0,3}#{1,6}\s+(?P<title>.+?)\s*$")
@@ -150,13 +220,20 @@ _ITEM = re.compile(r"^\s*(?:[-*+]\s+(?:\[[ xX]\]\s*)?|\d+[.)]\s+)(?P<text>.+?)\s
 
 
 def _section_items(description: str, heading: str) -> list[str]:
-    """Opsommingsregels onder een kop, ongeacht kopniveau of hoofdletters."""
+    """Opsommingsregels onder een kop, ongeacht kopniveau of hoofdletters.
+
+    De kop mag een toelichting tussen haakjes dragen: AGENTS.md schrijft
+    "## Definition of Done (dienstlijn content, sjabloon `Contentstuk`)" en dat
+    is dezelfde sectie. Alleen die vorm telt mee, zodat "Definition of Done is
+    hier niet van toepassing" geen sectie wordt.
+    """
     items: list[str] = []
     inside = False
     for line in (description or "").splitlines():
         found = _HEADING.match(line)
         if found:
-            inside = found.group("title").strip().lower().rstrip(":") == heading
+            title = found.group("title").strip().lower().rstrip(":")
+            inside = title == heading or title.startswith(f"{heading} (")
             continue
         if not inside:
             continue
