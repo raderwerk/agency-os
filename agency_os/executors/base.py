@@ -18,17 +18,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Optional, Protocol, Sequence
 
-try:  # pragma: no cover - A levert models.py in een eigen PR op dezelfde basis
-    from agency_os.linear.models import Artifact
-except ImportError:  # pragma: no cover - identiek aan het contract in sectie 3.2
-
-    @dataclass(frozen=True)
-    class Artifact:
-        """Bewijsstuk bij een run. Zelfde velden als `linear.models.Artifact`."""
-
-        type: str
-        url: str
-        label: str = ""
+from agency_os.linear.models import Artifact
 
 
 if TYPE_CHECKING:  # pragma: no cover - alleen voor typecontrole

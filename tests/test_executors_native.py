@@ -14,6 +14,7 @@ from agency_os.executors.native import (
     FALLBACK_ERROR,
     NativeExecutor,
     extract_pr_url,
+    fallback_comment,
     mention_body,
 )
 from tests.executor_fakes import (
@@ -227,6 +228,13 @@ class FallbackTests(NativeExecutorTestCase):
         receipt = self.receipt(triggered_at=NOW - timedelta(hours=23, minutes=59))
         _, result = self.executor.poll(self.client, receipt, self.issue)
         self.assertEqual(result.uitkomst, "mislukt")
+
+    def test_the_fallback_comment_is_the_literal_roster_sentence(self):
+        """De enige plek waar deze tekst nog staat: native.py schrijft hem echt."""
+        body = fallback_comment("Codex", "awaitingInput", NOW, "3f9a2c")
+        self.assertIn("De tweede reviewer (Codex) was niet beschikbaar", body)
+        self.assertIn("sessie stond op awaitingInput", body)
+        self.assertIn("Dit is geen volwaardige dubbele review.", body)
 
     def test_the_fallback_comment_can_never_open_a_gate(self):
         self.seed(make_session(status="stale"))

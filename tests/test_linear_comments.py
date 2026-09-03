@@ -105,12 +105,6 @@ class QaReportTests(unittest.TestCase):
 
 
 class OtherCommentTests(unittest.TestCase):
-    def test_the_native_fallback_is_the_literal_roster_sentence(self):
-        body = comments.native_fallback_comment("codex", T0, "3f9a2c")
-        self.assertIn("De tweede reviewer (Codex) was niet beschikbaar", body)
-        self.assertIn("sessie stond op awaitingInput sinds 2026-09-03 11:00", body)
-        self.assertIn("Dit is geen volwaardige dubbele review.", body)
-
     def test_the_rejection_comment_quotes_the_reason(self):
         body = comments.rejection_comment(
             run_id="3f9a2c", when=WHEN, reason="AFGEKEURD\nGeen idempotentie.",
@@ -140,7 +134,6 @@ class OtherCommentTests(unittest.TestCase):
             a_gate_card(), a_gate_card(high_risk=True),
             comments.claim_comment("3f9a2c", WHEN),
             comments.halt_comment("3f9a2c", WHEN, 2, 90, 1.25),
-            comments.native_fallback_comment("cursor", T0, "3f9a2c"),
             comments.confirmation_comment(
                 run_id="3f9a2c", when=WHEN, actor_name="Youp", decided_at=WHEN,
                 source="comment", source_id="c-2", outcome="akkoord",

@@ -25,7 +25,6 @@ __all__ = [
     "gate_card",
     "qa_report",
     "halt_comment",
-    "native_fallback_comment",
     "confirmation_comment",
     "rejection_comment",
     "stuck_comment",
@@ -155,17 +154,6 @@ def halt_comment(run_id: str, when: datetime, aborted: int, elapsed_s: float,
         f"Kosten van de afgebroken runs: {_euro(cost_eur)}.",
         "Ik claim niets meer tot een mens `schakelaar/pauze-alles` weghaalt. Dat label kan ik "
         "zelf niet verwijderen; dat is met opzet zo gebouwd.",
-    ])
-
-
-def native_fallback_comment(agent_name: str, since: datetime, run_id: str) -> str:
-    """De letterlijke terugvalcomment uit agent-roster 4."""
-    display = agent_name.capitalize() if agent_name.islower() else agent_name
-    return "\n\n".join([
-        f"De tweede reviewer ({display}) was niet beschikbaar: sessie stond op awaitingInput "
-        f"sinds {local_time(since)}. Ik val terug op Reviewer 1 (Fable 5.1). Dit is geen "
-        "volwaardige dubbele review.",
-        f"— Raderwerk · Spil (dispatcher) · run {run_id}",
     ])
 
 
