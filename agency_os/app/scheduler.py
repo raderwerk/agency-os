@@ -15,7 +15,8 @@ import secrets
 import threading
 import time
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from typing import Any, Callable, Mapping, MutableMapping, Optional, Sequence
 
 from agency_os.app import heartbeat, runs
@@ -27,7 +28,7 @@ from agency_os.executors import base as executors
 from agency_os.linear import claim as claims
 from agency_os.linear import comments, gates, killswitch, machine
 from agency_os.linear import poll as polling
-from agency_os.linear.client import LinearClient, LinearError
+from agency_os.linear.client import LinearClient, LinearError, WriteRefused
 from agency_os.linear.poll import PollConfig
 from agency_os.linear.store import Store
 
@@ -35,7 +36,11 @@ IN_SCOPE_STATES: Mapping[str, tuple[str, ...]] = {
     "WV": ("Ingepland", "Agentreview", "QA op preview", "Na-merge controle"),
     "KR": ("Lead", "Discovery", "Voorstel"),
 }
-BLOCKING_LABELS = ("run/bezet", "schakelaar/pauze", "run/vastgelopen", "run/onbevestigd")
+BLOCKING_LABELS = ("run/bezet", "schakelaar/pauze", "run/vastgelopen", "run/onbevestigd",
+                   "schakelaar/mens-vereist", "agent/mens")
+#: Bij een poort telt `run/bezet` niet mee: dat label is daar het spoor van een
+#: gestrande run, en dat mag een menselijk besluit niet tegenhouden.
+GATE_BLOCKING_LABELS = tuple(label for label in BLOCKING_LABELS if label != "run/bezet")
 
 
 def _utcnow() -> datetime:
@@ -82,8 +87,8 @@ def build_context(
     cfg: Config, *, only_issue: Optional[str] = None, extra_sinks: Sequence[Any] = ()
 ) -> Context:
     """Bouwt de client, de store, het logboek en de uitvoerders uit de config."""
-    logbook = Logbook(cfg.logbook_dir)
-    store = Store(cfg.db_path)
+    logbook = Logbook(_logbook_dir(cfg))
+    store = Store(_db_path(cfg))
     client = LinearClient(
         cfg.linear_api_key,
         endpoint=cfg.linear_endpoint,
@@ -103,18 +108,47 @@ def build_context(
             panel_identifier=cfg.panel_identifier,
             in_scope_states=IN_SCOPE_STATES,
             max_claims=cfg.max_claims_per_cycle,
+            issue_budget=cfg.issue_budget,
         ),
         only_issue=only_issue,
     )
+
+
+def _db_path(cfg: Config) -> Path:
+    """Een droogloop krijgt zijn eigen sqlite, en raakt de echte nooit aan.
+
+    `dry_run` dempt de schrijfacties naar Linear, maar `bump_role_run`,
+    `ledger.record_run` en `insert_claim` schrijven gewoon door. Op de echte
+    database betekent dat: de droogloop uit het leesmij-recept laat vier open
+    claims achter en laat de lusdetectie de eerstvolgende échte run weigeren.
+    """
+    return Path(cfg.state_dir) / "dry-run.sqlite3" if cfg.dry_run else Path(cfg.db_path)
+
+
+def _logbook_dir(cfg: Config) -> Path:
+    return Path(cfg.logbook_dir) / "dry-run" if cfg.dry_run else Path(cfg.logbook_dir)
 
 
 def run_cycle(ctx: Context, cycle_index: int) -> CycleReport:
     """Eén volledige cyclus."""
     at = ctx.now()
     errors: list[str] = []
+    if cycle_index == 1 and not ctx.cfg.dry_run:
+        # Verzoening bij het opstarten (architectuur 6.1 en 13): een proces dat
+        # omviel laat zijn claimrij open staan, en die rij houdt het issue
+        # voorgoed onclaimbaar. `status` en `ledger` bouwen dezelfde context en
+        # blijven leesbewerkingen, dus dit hoort in de cyclus en niet daarvoor.
+        reclaimed = ctx.store.release_stale_claims(
+            ctx.now() - timedelta(seconds=ctx.cfg.executors.run_timeout_s))
+        if reclaimed:
+            ctx.logbook.write("halt", run_id=None, issue=None,
+                              payload={"verweesde_claims_vrijgegeven": reclaimed})
     result = polling.poll(ctx.client, ctx.poll_cfg)
     ctx.store.set_meta("cycle", str(cycle_index))
     ctx.store.set_meta("queue_len", str(len(result.ready)))
+    # De hartslag en de dagafsluiting lezen deze teller terug; zonder deze regel
+    # melden ze allebei eeuwig "Issueteller: 0".
+    ctx.store.set_meta("issue_count", str(result.switches.issue_count))
     ctx.logbook.write(
         "poll",
         run_id=None,
@@ -139,6 +173,7 @@ def run_cycle(ctx: Context, cycle_index: int) -> CycleReport:
     gates_seen, gates_applied = _apply_gates(ctx, result, errors)
     watching = {issue.id: issue for issue in result.watching}
     finished = runs.collect_native(ctx, watching, errors, guard=_guard)
+    _reconcile(ctx, result, errors)
     jobs = _claim(ctx, result, errors)
     finished += runs.execute(ctx, jobs, errors, guard=_guard)
 
@@ -225,6 +260,15 @@ def _apply_gates(ctx: Context, result: Any, errors: list[str]) -> tuple[int, int
     for issue in result.gates:
         if ctx.only_issue and issue.identifier != ctx.only_issue:
             continue
+        blocker = _blocked(issue, result.switches, labels=GATE_BLOCKING_LABELS)
+        if blocker:
+            # Een poortstatus is geen uitzondering op de rem. `poll` zet elk
+            # `Poort*`-issue in `gates` vóór de labelcontrole, dus zonder deze
+            # regel wordt een gepauzeerd of al onbevestigd issue elke ronde
+            # opnieuw beoordeeld en beschreven.
+            ctx.logbook.write("skip", run_id=None, issue=issue.identifier,
+                              payload={"reden": blocker, "waar": "poort"})
+            continue
         seen += 1
         run_id = secrets.token_hex(3)
         try:
@@ -241,13 +285,41 @@ def _apply_gates(ctx: Context, result: Any, errors: list[str]) -> tuple[int, int
             if obs.outcome is None:
                 continue
             if not obs.valid:
-                gates.mark_unconfirmed(ctx.client, issue, obs, run_id=run_id)
+                gates.mark_unconfirmed(ctx.client, ctx.store, issue, obs, run_id=run_id)
                 continue
             gates.apply_gate_decision(ctx.client, ctx.store, issue, obs, run_id=run_id)
             applied += 1
-        except LinearError as exc:
+        except (LinearError, WriteRefused) as exc:
             errors.append(f"poort {issue.identifier}: {exc}")
     return seen, applied
+
+
+def _reconcile(ctx: Context, result: Any, errors: list[str]) -> int:
+    """`run/bezet` zonder open claim is een gestrande run, geen lopende.
+
+    Zonder deze stap houdt één gevallen run het issue voorgoed in `watching`:
+    de poll zet het nooit meer in `ready`, dus het wordt nooit meer geclaimd en
+    nooit meer vrijgegeven. De verweesde rijen in sqlite gaan bij de eerste
+    cyclus open (architectuur 6.1 en 13); de labels die erbij horen gaan hier.
+    """
+    freed = 0
+    for issue in result.watching:
+        if issue.id in ctx.receipts or ctx.store.open_claim(issue.id) is not None:
+            continue
+        if ctx.only_issue and issue.identifier != ctx.only_issue:
+            continue
+        run_id = secrets.token_hex(3)
+        try:
+            ctx.client.update_issue(issue.id, run_id=run_id,
+                                    added_labels=[claims.QUEUE_LABEL],
+                                    removed_labels=[claims.BUSY_LABEL])
+        except (LinearError, WriteRefused) as exc:
+            errors.append(f"verzoening {issue.identifier}: {exc}")
+            continue
+        ctx.logbook.write("skip", run_id=run_id, issue=issue.identifier,
+                          payload={"reden": "verweesde run/bezet teruggezet op run/wachtrij"})
+        freed += 1
+    return freed
 
 
 # ---------- claimen en routeren ----------
@@ -279,7 +351,7 @@ def _claim(ctx: Context, result: Any, errors: list[str]) -> list[Job]:
         run_id = secrets.token_hex(3)
         try:
             claim = claims.try_claim(ctx.client, ctx.store, issue, run_id, settle_s=ctx.cfg.claim_settle_s)
-        except LinearError as exc:
+        except (LinearError, WriteRefused) as exc:
             errors.append(f"claim {issue.identifier}: {exc}")
             continue
         if claim is None:
@@ -302,9 +374,10 @@ def _claim(ctx: Context, result: Any, errors: list[str]) -> list[Job]:
     return jobs
 
 
-def _blocked(issue: Any, switches: Any) -> Optional[str]:
+def _blocked(issue: Any, switches: Any,
+             labels: Sequence[str] = BLOCKING_LABELS) -> Optional[str]:
     """De redenen om een issue in deze cyclus met rust te laten."""
-    for label in BLOCKING_LABELS:
+    for label in labels:
         if label in issue.labels:
             return label
     if issue.id in switches.paused_issue_ids:
@@ -346,7 +419,7 @@ def _refuse(ctx: Context, issue: Any, refusal: Refusal, errors: list[str]) -> No
                 added_labels=["schakelaar/mens-vereist"],
                 assignee_id=sorted(ctx.cfg.approver_ids)[0],
             )
-    except LinearError as exc:
+    except (LinearError, WriteRefused) as exc:
         errors.append(f"weigering {issue.identifier}: {exc}")
 
 
@@ -360,7 +433,7 @@ def _stop_loop(ctx: Context, issue: Any, reason: str, errors: list[str]) -> None
             issue.id, comments.signature("Spil", "dispatcher", run_id, ctx.now()) + f"\n\n{reason}.", run_id=run_id
         )
         ctx.client.update_issue(issue.id, run_id=run_id, added_labels=["lus-verdacht", "schakelaar/pauze"])
-    except LinearError as exc:
+    except (LinearError, WriteRefused) as exc:
         errors.append(f"lusdetectie {issue.identifier}: {exc}")
 
 

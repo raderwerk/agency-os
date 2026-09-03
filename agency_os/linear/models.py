@@ -366,6 +366,8 @@ class GateObservation:
     actor_is_app: Optional[bool]
     valid: bool
     refusal: Optional[str]
+    #: De woorden van de mens bij een afkeuring, letterlijk zoals hij ze schreef.
+    reason: Optional[str] = None
 
 
 @dataclass(frozen=True)

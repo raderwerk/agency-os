@@ -21,7 +21,7 @@ from .models import Artifact, MutationRecord, RunRecord
 
 __all__ = ["Store", "iso", "parse_iso"]
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 _MIGRATION_1 = """
 CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
@@ -94,6 +94,17 @@ CREATE TABLE IF NOT EXISTS heartbeats (
 """
 
 
+# Migratie 2: een aangestoten native sessie moet ook ná een herstart terug te
+# vertalen zijn naar een run. Zonder rol, model en status is de bon niet genoeg
+# om de sessie af te maken, want de statustabel kent geen regel voor de status
+# waarin het issue tijdens de run staat.
+_MIGRATION_2 = (
+    ("sessions", "role", "ALTER TABLE sessions ADD COLUMN role TEXT"),
+    ("sessions", "model_key", "ALTER TABLE sessions ADD COLUMN model_key TEXT"),
+    ("sessions", "state", "ALTER TABLE sessions ADD COLUMN state TEXT"),
+)
+
+
 def iso(moment: Optional[datetime]) -> Optional[str]:
     """Tijdzonebewuste UTC -> ISO-8601 met Z. None blijft None."""
     if moment is None:
@@ -126,7 +137,13 @@ class Store:
     def migrate(self) -> None:
         """Vooruit-genummerde migraties; nooit terug."""
         self.conn.executescript(_MIGRATION_1)
+        for table, column, statement in _MIGRATION_2:
+            if column not in self._columns(table):
+                self.conn.execute(statement)
         self.set_meta("schema_version", str(SCHEMA_VERSION))
+
+    def _columns(self, table: str) -> set[str]:
+        return {row["name"] for row in self.conn.execute(f"PRAGMA table_info({table})")}
 
     def close(self) -> None:
         self.conn.close()
@@ -201,6 +218,34 @@ class Store:
             "UPDATE claims SET released_at = ?, outcome = ? WHERE issue_id = ? AND run_id = ?",
             (iso(released_at or datetime.now(timezone.utc)), outcome, issue_id, run_id),
         )
+
+    def claim_is_closed(self, issue_id: str, run_id: str) -> bool:
+        """True als deze run het issue al gehad heeft en netjes heeft losgelaten.
+
+        Het claimcomment van zo'n run blijft in Linear staan. Zonder deze vraag
+        leest de volgende claimer dat comment als een levende tegenstander en
+        trekt hij zich terug voor iemand die allang klaar is.
+        """
+        row = self.conn.execute(
+            "SELECT 1 FROM claims WHERE issue_id = ? AND run_id = ? AND released_at IS NOT NULL",
+            (issue_id, run_id),
+        ).fetchone()
+        return row is not None
+
+    def release_stale_claims(self, older_than: datetime,
+                             outcome: str = "verweesd") -> list[str]:
+        """Sluit elke open claim die ouder is dan `older_than`. Geeft de issue-ids terug.
+
+        Een proces dat omvalt laat zijn rij open staan, en die rij houdt het
+        issue voorgoed onclaimbaar (architectuur 6.1 en 13: de volgende start
+        verzoent).
+        """
+        rows = list(self.conn.execute(
+            "SELECT issue_id, run_id FROM claims WHERE released_at IS NULL AND claimed_at < ?",
+            (iso(older_than),)))
+        for row in rows:
+            self.release_claim(row["issue_id"], row["run_id"], outcome)
+        return [row["issue_id"] for row in rows]
 
     def has_claim(self, issue_id: str, run_id: str) -> bool:
         row = self.conn.execute(
@@ -290,21 +335,42 @@ class Store:
     def upsert_session(self, *, issue_id: str, run_id: str, executor: str,
                        session_id: Optional[str], trigger_comment_id: Optional[str],
                        triggered_at: datetime, last_status: Optional[str] = None,
-                       strikes: int = 0, closed_at: Optional[datetime] = None) -> None:
+                       strikes: int = 0, closed_at: Optional[datetime] = None,
+                       role: Optional[str] = None, model_key: Optional[str] = None,
+                       state: Optional[str] = None) -> None:
         self.conn.execute(
             "INSERT INTO sessions(issue_id, run_id, executor, session_id, trigger_comment_id, "
-            "triggered_at, last_status, strikes, closed_at) VALUES(?,?,?,?,?,?,?,?,?) "
+            "triggered_at, last_status, strikes, closed_at, role, model_key, state) "
+            "VALUES(?,?,?,?,?,?,?,?,?,?,?,?) "
             "ON CONFLICT(issue_id, run_id) DO UPDATE SET session_id=excluded.session_id, "
             "last_status=excluded.last_status, strikes=excluded.strikes, "
-            "closed_at=excluded.closed_at",
+            "closed_at=excluded.closed_at, "
+            "role=COALESCE(excluded.role, sessions.role), "
+            "model_key=COALESCE(excluded.model_key, sessions.model_key), "
+            "state=COALESCE(excluded.state, sessions.state)",
             (issue_id, run_id, executor, session_id, trigger_comment_id, iso(triggered_at),
-             last_status, strikes, iso(closed_at)),
+             last_status, strikes, iso(closed_at), role, model_key, state),
         )
 
     def get_session(self, issue_id: str, run_id: str) -> Optional[sqlite3.Row]:
         return self.conn.execute(
             "SELECT * FROM sessions WHERE issue_id = ? AND run_id = ?", (issue_id, run_id)
         ).fetchone()
+
+    def open_sessions(self) -> list[sqlite3.Row]:
+        """Elke aangestoten native sessie die nog geen einde kreeg.
+
+        Hiermee overleeft een Codex- of Cursorsessie een herstart: zonder deze
+        rij bestaat het bewijs van een betaalde sessie alleen in het geheugen van
+        het proces dat hem startte.
+        """
+        return list(self.conn.execute(
+            "SELECT * FROM sessions WHERE closed_at IS NULL ORDER BY triggered_at"))
+
+    def close_session(self, issue_id: str, run_id: str, closed_at: datetime) -> None:
+        self.conn.execute(
+            "UPDATE sessions SET closed_at = ? WHERE issue_id = ? AND run_id = ?",
+            (iso(closed_at), issue_id, run_id))
 
     # ---------------- loop detection ----------------
 

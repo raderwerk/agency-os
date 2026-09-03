@@ -167,6 +167,12 @@ def ensure_worktree(
             head_sha=_head_sha(cfg, path),
         )
 
+    if cfg.dry_run:
+        # Ook `git fetch` is een schrijfactie op de kloon van iemand anders; een
+        # droogloop hoort geen enkele van de doelrepositories aan te raken.
+        return Worktree(repo, path, branch_name(identifier, title), base, created=False,
+                        head_sha="")
+
     _fetch(cfg, repo)
     refs = _probe_branches(cfg, repo, identifier)
     if refs and refs[0].startswith("origin/"):
@@ -178,9 +184,6 @@ def ensure_worktree(
     else:
         branch = branch_name(identifier, title)
         args = ["-b", branch, str(path), _base_ref(cfg, repo, base)]
-
-    if cfg.dry_run:
-        return Worktree(repo, path, branch, base, created=False, head_sha="")
 
     _add(cfg, repo, path, args)
     return Worktree(repo, path, branch, base, created=True, head_sha=_head_sha(cfg, path))

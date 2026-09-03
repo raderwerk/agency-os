@@ -77,11 +77,46 @@ class CommentChannelTests(unittest.TestCase):
         self.assertFalse(obs.valid)
         self.assertEqual(obs.refusal, gates.REFUSALS[3])
 
-    def test_condition_4_decision_is_older_than_the_card(self):
+    def test_condition_4_a_decision_older_than_the_card_is_not_read_at_all(self):
+        """Voorwaarde 4 in het tekstkanaal: alleen wat ná de kaart staat telt.
+
+        Het besluit van een vorige poortronde mag geen antwoord op deze kaart
+        worden -- niet als geldig besluit en ook niet als weigering, want dan
+        loopt elk issue dat een poort twee keer bezoekt vast.
+        """
         _, obs = observe(gate_issue(),
                          [card(), decision(created_at=T0 - timedelta(minutes=5))])
+        self.assertIsNone(obs.outcome)
+        self.assertIsNone(obs.refusal)
         self.assertFalse(obs.valid)
-        self.assertEqual(obs.refusal, gates.REFUSALS[4])
+
+    def test_the_newest_decision_after_the_card_wins(self):
+        """Ronde 2: een verse kaart met een vers AKKOORD na een oude afkeuring."""
+        old_card = card(id="c-card-1", created_at=T0 - timedelta(days=1))
+        old_reject = decision(id="c-oud", body="AFGEKEURD: te vaag",
+                              created_at=T0 - timedelta(days=1) + timedelta(minutes=10))
+        _, obs = observe(gate_issue(), [old_card, old_reject, card(), decision()])
+        self.assertTrue(obs.valid, obs.refusal)
+        self.assertEqual(obs.outcome, "akkoord")
+        self.assertEqual(obs.source_id, "c-2")
+
+    def test_a_decision_without_a_card_is_refused_and_never_acted_on(self):
+        _, obs = observe(gate_issue(), [decision()])
+        self.assertFalse(obs.valid)
+        self.assertEqual(obs.outcome, "akkoord")
+        self.assertEqual(obs.refusal, gates.REFUSALS[6])
+
+    def test_afgekeurd_with_the_reason_on_the_same_line_is_the_form_the_card_asks_for(self):
+        _, obs = observe(gate_issue(),
+                         [card(), decision(body="AFGEKEURD: de tekst is te vaag")])
+        self.assertTrue(obs.valid, obs.refusal)
+        self.assertEqual(obs.outcome, "afgekeurd")
+        self.assertEqual(obs.reason, "de tekst is te vaag")
+
+    def test_an_unreadable_token_carries_an_outcome_so_the_human_gets_an_answer(self):
+        _, obs = observe(gate_issue(), [card(), decision(body="AKKOORD, ziet er goed uit")])
+        self.assertEqual(obs.outcome, gates.UNREADABLE)
+        self.assertFalse(obs.valid)
 
     def test_condition_5_the_first_line_is_not_an_exact_token(self):
         _, obs = observe(gate_issue(), [card(), decision(body="AKKOORD, ziet er goed uit")])
@@ -153,16 +188,31 @@ class LabelChannelTests(unittest.TestCase):
         self.assertFalse(obs.valid)
         self.assertEqual(obs.refusal, gates.REFUSALS[1])
 
-    def test_without_history_it_degrades_but_stays_valid(self):
+    def test_without_history_the_label_channel_is_refused(self):
+        """Zonder actor is voorwaarde 1 tot en met 4 niet te controleren.
+
+        `Issue.history` geeft op deze workspace niets terug, dus een label alleen
+        bewijst niet wie het gezet heeft -- en dan gaat de poort niet open.
+        """
         issue = gate_issue(labels=("poort/afgekeurd",))
         client = FakeLinearClient([issue], comments={issue.id: [card()]},
                                   history_supported=False)
         obs = gates.evaluate_gate(client, issue, approver_ids=APPROVERS,
                                   dispatcher_user_id=DISPATCHER)
-        self.assertTrue(obs.valid)
+        self.assertFalse(obs.valid)
         self.assertEqual(obs.outcome, "afgekeurd")
         self.assertEqual(obs.refusal, gates.DEGRADED_ACTOR)
         self.assertIsNone(obs.actor_id)
+
+    def test_a_label_flip_older_than_the_card_fails_condition_4(self):
+        issue = gate_issue(labels=("poort/akkoord",))
+        history = self._history()
+        history["issue-207"][0]["createdAt"] = "2026-09-03T08:30:00.000Z"
+        client = FakeLinearClient([issue], comments={issue.id: [card()]}, history=history)
+        obs = gates.evaluate_gate(client, issue, approver_ids=APPROVERS,
+                                  dispatcher_user_id=DISPATCHER)
+        self.assertFalse(obs.valid)
+        self.assertEqual(obs.refusal, gates.REFUSALS[4])
 
     def test_a_label_flip_cannot_carry_a_high_risk_acknowledgement(self):
         issue = gate_issue(labels=("poort/akkoord", "risico/hoog"))
@@ -240,7 +290,15 @@ class ApplyTests(unittest.TestCase):
             gate_issue(), [card(), decision(body="AFGEKEURD\n\nGeen idempotentie.")])
         self.assertEqual(target, "In uitvoering")
         bodies = [c.body for c in client.comments("issue-207") if c.author_id == DISPATCHER]
-        self.assertTrue(any("> AFGEKEURD" in body for body in bodies))
+        # De woorden van de mens zijn de opdracht voor de volgende ronde, niet
+        # het token waarmee hij ze inleidde.
+        self.assertTrue(any("> Geen idempotentie." in body for body in bodies), bodies)
+
+    def test_the_reason_on_the_token_line_reaches_the_next_round(self):
+        client, _, _ = self._apply(
+            gate_issue(), [card(), decision(body="AFGEKEURD: de prijs klopt niet")])
+        bodies = [c.body for c in client.comments("issue-207") if c.author_id == DISPATCHER]
+        self.assertTrue(any("> de prijs klopt niet" in body for body in bodies), bodies)
 
     def test_second_rejection_stops_the_issue_without_a_third_attempt(self):
         issue = gate_issue()
@@ -267,8 +325,12 @@ class ApplyTests(unittest.TestCase):
 
     def test_a_label_decision_falls_back_to_the_moment_we_saw_it(self):
         issue = gate_issue(labels=("poort/akkoord", "poort/wacht-op-mens"))
-        client = FakeLinearClient([issue], comments={issue.id: [card()]},
-                                  history_supported=False)
+        client = FakeLinearClient([issue], comments={issue.id: [card()]}, history={
+            issue.id: [{"createdAt": "2026-09-03T09:30:00.000Z",
+                        "actor": {"id": APPROVER, "name": "Youp", "app": False},
+                        "addedLabels": [{"id": "l", "name": "akkoord",
+                                         "parent": {"name": "poort"}}],
+                        "removedLabels": []}]})
         obs = gates.evaluate_gate(client, issue, approver_ids=APPROVERS,
                                   dispatcher_user_id=DISPATCHER)
         gates.apply_gate_decision(client, self.store, issue, obs, run_id="3f9a2c")
@@ -277,19 +339,34 @@ class ApplyTests(unittest.TestCase):
 
 
 class MarkUnconfirmedTests(unittest.TestCase):
+    def setUp(self):
+        self.store = Store(":memory:")
+        self.addCleanup(self.store.close)
+
     def test_it_sets_both_labels_and_names_the_failed_condition(self):
         issue = gate_issue()
         client = FakeLinearClient([issue],
                                   comments={issue.id: [card(), decision(author_id="user-x")]})
         obs = gates.evaluate_gate(client, issue, approver_ids=APPROVERS,
                                   dispatcher_user_id=DISPATCHER)
-        gates.mark_unconfirmed(client, issue, obs, run_id="3f9a2c")
+        self.assertTrue(gates.mark_unconfirmed(client, self.store, issue, obs, run_id="3f9a2c"))
         update = [m for m in client.mutations if m.mutation == "issueUpdate"][0]
         self.assertEqual(sorted(update.variables_summary["addedLabelIds"]),
                          ["run/onbevestigd", "schakelaar/mens-vereist"])
         self.assertFalse(any("stateId" in m.variables_summary for m in client.mutations))
         body = client.comments("issue-207")[-1].body
         self.assertIn("voorwaarde 1", body)
+
+    def test_the_same_refusal_is_never_written_twice(self):
+        issue = gate_issue()
+        client = FakeLinearClient([issue],
+                                  comments={issue.id: [card(), decision(author_id="user-x")]})
+        obs = gates.evaluate_gate(client, issue, approver_ids=APPROVERS,
+                                  dispatcher_user_id=DISPATCHER)
+        gates.mark_unconfirmed(client, self.store, issue, obs, run_id="3f9a2c")
+        writes = len(client.mutations)
+        self.assertFalse(gates.mark_unconfirmed(client, self.store, issue, obs, run_id="4b8d1e"))
+        self.assertEqual(len(client.mutations), writes)
 
     def test_it_refuses_to_run_on_a_valid_observation(self):
         issue = gate_issue()
@@ -298,7 +375,7 @@ class MarkUnconfirmedTests(unittest.TestCase):
         obs = gates.evaluate_gate(client, issue, approver_ids=APPROVERS,
                                   dispatcher_user_id=DISPATCHER)
         with self.assertRaises(WriteRefused):
-            gates.mark_unconfirmed(client, issue, obs, run_id="3f9a2c")
+            gates.mark_unconfirmed(client, self.store, issue, obs, run_id="3f9a2c")
 
 
 class EnterGateTests(unittest.TestCase):

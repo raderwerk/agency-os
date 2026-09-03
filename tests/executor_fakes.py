@@ -12,13 +12,24 @@ import subprocess
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Optional, Sequence
+from typing import Callable, Optional, Sequence
 
 from agency_os import gate
 from agency_os.executors.base import ExecutionRequest, ExecutorConfig
 from agency_os.executors.process import ProcessResult
 
 NOW = datetime(2026, 9, 3, 9, 14, tzinfo=timezone.utc)
+
+
+def frozen_clock(offset: timedelta = timedelta(minutes=5)) -> Callable[[], datetime]:
+    """Een klok die stilstaat op `NOW + offset`.
+
+    De sessievormen hieronder hangen aan `NOW`. Een uitvoerder die de echte
+    wandklok leest, valt daarmee vanzelf in zijn terugvaltak zodra de dag
+    vordert; de klok hoort dus net zo bevroren te zijn als de fixtures.
+    """
+    moment = NOW + offset
+    return lambda: moment
 
 
 # --------------------------------------------------------------------------

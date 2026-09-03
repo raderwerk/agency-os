@@ -19,7 +19,8 @@ from .models import IssueView, SwitchState
 from .store import Store
 
 __all__ = ["read_switches", "halt_everything", "trip_emergency_stop",
-           "GLOBAL_PAUSE_LABEL", "ISSUE_PAUSE_LABEL", "ENGINE_DEAD_LABEL"]
+           "GLOBAL_PAUSE_LABEL", "ISSUE_PAUSE_LABEL", "ENGINE_DEAD_LABEL",
+           "PANEL_UNREACHABLE"]
 
 GLOBAL_PAUSE_LABEL = "schakelaar/pauze-alles"
 ISSUE_PAUSE_LABEL = "schakelaar/pauze"
@@ -32,14 +33,22 @@ def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
 
 
+PANEL_UNREACHABLE = "bedieningspaneel onbereikbaar"
+
+
 def read_switches(client: LinearClient, panel: Optional[IssueView],
                   issues: Sequence[IssueView], *, issue_count: int,
-                  thresholds: tuple[int, int, int]) -> SwitchState:
+                  thresholds: tuple[int, int, int],
+                  panel_required: bool = False) -> SwitchState:
     """Leest de drie schakelaars en het issuebudget uit één pollronde.
 
     `client` wordt hier bewust niet bevraagd: alles staat al in de gebatchte
     leesronde. De parameter blijft in de handtekening omdat de aanroeper hem
     heeft en een latere uitbreiding hem nodig heeft.
+
+    Is er een paneel geconfigureerd maar niet gevonden, dan valt deze functie
+    dicht en niet open: `schakelaar/pauze-alles` staat op dat ene issue, dus een
+    paneel dat we niet kunnen lezen is een noodstop die we niet kunnen zien.
     """
     warn, restrict, stop = thresholds
     reasons: list[str] = []
@@ -47,6 +56,9 @@ def read_switches(client: LinearClient, panel: Optional[IssueView],
     global_pause = bool(panel and GLOBAL_PAUSE_LABEL in panel.labels)
     if global_pause:
         reasons.append(f"{GLOBAL_PAUSE_LABEL} staat op {panel.identifier if panel else '?'}")
+    elif panel is None and panel_required:
+        global_pause = True
+        reasons.append(f"{PANEL_UNREACHABLE}: de noodstop is niet te lezen, dus ik claim niets")
 
     if issue_count >= stop:
         budget_level = "stop"

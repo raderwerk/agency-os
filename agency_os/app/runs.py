@@ -14,7 +14,7 @@ hetzelfde proces.
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, Callable, Optional
 
 from agency_os.app import prompts
@@ -24,7 +24,8 @@ from agency_os.executors import cost, worktree
 from agency_os.linear import claim as claims
 from agency_os.linear import comments, gates, ledger, machine
 from agency_os.linear.client import LinearError
-from agency_os.linear.models import RunRecord
+from agency_os.linear.models import Claim, RunRecord
+from agency_os.linear.store import parse_iso
 
 FINAL_LABEL = {
     "klaar": "run/klaar",
@@ -92,9 +93,32 @@ def run_one(ctx: Any, job: Job) -> Any:
 
 
 def start_native(ctx: Any, job: Job, executor: Any) -> None:
-    """Native lane: één mention-comment, daarna wachten in latere cycli."""
+    """Native lane: één mention-comment, daarna wachten in latere cycli.
+
+    De bon gaat óók naar sqlite. Een mention start een echte, betaalde
+    cloudsessie; als die alleen in het geheugen van dit proces bestaat, is de
+    sessie na `run --once` niet meer terug te vinden, blijft `run/bezet` staan
+    en komt er nooit een ledgerregel.
+    """
     receipt = executor.trigger(ctx.client, request_for(ctx, job))
     ctx.receipts[job.issue.id] = (receipt, job)
+    ctx.store.upsert_session(
+        issue_id=job.issue.id,
+        run_id=job.run_id,
+        executor=job.route.executor_name,
+        session_id=receipt.session_id,
+        trigger_comment_id=receipt.trigger_comment_id,
+        triggered_at=receipt.triggered_at,
+        last_status="aangestoten",
+        strikes=receipt.strikes,
+        role=job.route.role.key,
+        model_key=job.route.model_key,
+        state=job.state,
+    )
+    # Een regel in het Kostenboek op het moment van aanstoten, niet pas bij de
+    # uitkomst: de sessie is vanaf nu betaald werk. `finish` schrijft dezelfde
+    # `run_id` later over met de echte cijfers.
+    ledger.record_run(ctx.store, run_record(ctx, job, _pending(receipt), None))
     ctx.logbook.write(
         "run",
         run_id=job.run_id,
@@ -103,8 +127,29 @@ def start_native(ctx: Any, job: Job, executor: Any) -> None:
     )
 
 
+def _pending(receipt: Any) -> Any:
+    """De vorm van een run die wel begonnen maar nog niet afgelopen is."""
+    return executors.ExecutionResult(
+        run_id=receipt.run_id,
+        uitkomst="bezig",
+        summary_md="",
+        dod="-",
+        question=None,
+        error=None,
+        pr_url=None,
+        branch=None,
+        artifacts=(),
+        usage=executors.Usage(source="native-unmetered", metered=False),
+        started_at=receipt.triggered_at,
+        ended_at=None,
+        session_id=receipt.session_id,
+        raw_log_path=None,
+    )
+
+
 def collect_native(ctx: Any, watching: dict[str, Any], errors: list[str], *, guard: Callable) -> int:
     """Kijkt bij de lopende native sessies of er al een uitkomst is."""
+    rehydrate(ctx, watching, errors)
     finished = 0
     for issue_id, (receipt, job) in list(ctx.receipts.items()):
         issue = watching.get(issue_id, job.issue)
@@ -117,12 +162,69 @@ def collect_native(ctx: Any, watching: dict[str, Any], errors: list[str], *, gua
             errors.append(f"sessie {issue.identifier}: {exc}")
             continue
         ctx.receipts[issue_id] = (receipt, job)
+        ctx.store.upsert_session(
+            issue_id=issue_id, run_id=receipt.run_id, executor=job.route.executor_name,
+            session_id=receipt.session_id, trigger_comment_id=receipt.trigger_comment_id,
+            triggered_at=receipt.triggered_at,
+            last_status="klaar" if outcome else "loopt", strikes=receipt.strikes,
+            closed_at=ctx.now() if outcome else None,
+        )
         if outcome is None:
             continue
         del ctx.receipts[issue_id]
         guard(errors, f"terugschrijven {issue.identifier}", lambda job=job, r=outcome: finish(ctx, job, r))
         finished += 1
     return finished
+
+
+def rehydrate(ctx: Any, watching: dict[str, Any], errors: list[str]) -> int:
+    """Haalt aangestoten native sessies terug uit sqlite na een herstart.
+
+    `ctx.receipts` leeft in het geheugen van één proces. Zonder deze stap is een
+    Codex- of Cursorsessie na `run --once` verweesd: het issue houdt `run/bezet`,
+    de claim blijft open en niemand kijkt ooit nog of de sessie klaar is.
+
+    De route wordt niet opnieuw afgeleid maar teruggelezen: tijdens de run staat
+    het issue in een status waar de routeringstabel geen regel voor heeft, dus
+    `decide` zou hier weigeren op een run die allang loopt.
+    """
+    from agency_os.app.routing import Route
+
+    recovered = 0
+    for row in ctx.store.open_sessions():
+        issue_id = row["issue_id"]
+        if issue_id in ctx.receipts:
+            continue
+        issue = watching.get(issue_id)
+        if issue is None:
+            continue
+        role = ctx.table.roles.get(row["role"] or "")
+        if role is None:
+            errors.append(f"sessie {issue.identifier}: rol {row['role']!r} bestaat niet meer")
+            continue
+        claim_row = ctx.store.open_claim(issue_id)
+        claim = Claim(
+            run_id=row["run_id"], issue_id=issue_id, issue_identifier=issue.identifier,
+            claimed_at=(parse_iso(claim_row["claimed_at"]) if claim_row
+                        else parse_iso(row["triggered_at"])) or ctx.now(),
+            comment_id=row["trigger_comment_id"],
+        )
+        job = Job(run_id=row["run_id"], issue=issue,
+                  route=Route(role=role, model_key=row["model_key"] or role.default_model,
+                              executor_name=row["executor"],
+                              reason="hervat uit sqlite na een herstart"),
+                  claim=claim, state=row["state"] or issue.state_name)
+        ctx.receipts[issue_id] = (
+            executors.TriggerReceipt(
+                run_id=row["run_id"], issue_id=issue_id, executor=row["executor"],
+                trigger_comment_id=row["trigger_comment_id"], session_id=row["session_id"],
+                triggered_at=parse_iso(row["triggered_at"]) or ctx.now(),
+                strikes=int(row["strikes"] or 0),
+            ),
+            job,
+        )
+        recovered += 1
+    return recovered
 
 
 def request_for(ctx: Any, job: Job) -> Any:
@@ -153,8 +255,20 @@ def request_for(ctx: Any, job: Job) -> Any:
 def finish(ctx: Any, job: Job, result: Any) -> None:
     """Het uitvoercontract: één comment, één issueUpdate, eventueel bijlagen."""
     issue, role = job.issue, job.route.role
+    kept, refused = executors.safe_artifacts(result.artifacts)
+    result = replace(result, artifacts=kept)
     target, extra_labels, assignee = outcome_of(ctx, job, result)
     run = run_record(ctx, job, result, target)
+
+    # Het Kostenboek gaat vóór het netwerk. De tokens zijn hier al verbrand;
+    # elke Linear-schrijfactie hierna kan een `LinearError` gooien, en die wordt
+    # door `_guard` opgevangen. Stond deze regel onderaan, dan zou zo'n fout de
+    # kosten uit het boek laten verdwijnen -- in een project waarvan de stelling
+    # een eerlijk boek is.
+    ledger.record_run(ctx.store, run)
+    if refused:
+        ctx.logbook.write("run", run_id=job.run_id, issue=issue.identifier,
+                          payload={"geweigerd_bewijs": [a.url for a in refused]})
 
     ctx.client.create_comment(
         issue.id,
@@ -166,6 +280,7 @@ def finish(ctx: Any, job: Job, result: Any) -> None:
             evidence=result.artifacts,
             dod=result.dod,
             next_state=target or job.state,
+            refused=refused,
         ),
         run_id=job.run_id,
     )
@@ -192,8 +307,8 @@ def finish(ctx: Any, job: Job, result: Any) -> None:
     for artifact in result.artifacts:
         ctx.client.attach_link(issue.id, artifact.url, artifact.label or artifact.type, run_id=job.run_id)
 
-    ledger.record_run(ctx.store, run)
     claims.release_claim(ctx.client, ctx.store, job.claim, final_label=FINAL_LABEL[result.uitkomst])
+    ctx.store.close_session(issue.id, job.run_id, ctx.now())
     ctx.logbook.write(
         "run",
         run_id=job.run_id,

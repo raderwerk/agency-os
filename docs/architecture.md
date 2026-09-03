@@ -1139,12 +1139,19 @@ def strip_quotes_and_code(text: str) -> str:
 5. first line of `strip_quotes_and_code(body)` matches exactly `AKKOORD`, `AKKOORD RISICO-GEZIEN`,
    or `AFGEKEURD: <reden>`
 
-A label flip to `poort/akkoord` / `poort/afgekeurd` is the second, equally authoritative channel.
-Its actor comes from the issue history; if `Issue.history` turns out not to expose actor and label
-deltas (spec flags this as unverified), the label channel degrades to: *label flipped, no mutation
-of ours in the `mutations` table explains it, therefore human* — and the observation carries
-`refusal="actor niet vast te stellen uit history; afgeleid uit het handelingenlogboek"` while still
-being valid. That degradation is logged on every use, never hidden.
+A label flip to `poort/akkoord` / `poort/afgekeurd` is the second channel, and it is only as
+authoritative as its actor. That actor comes from `Issue.history`. Verified against the live
+workspace on 2026-09-03: `Issue.history` returns an empty node list, so the actor is *not*
+available. Without an actor, conditions 1 to 4 cannot be checked at all, and "we did not set it
+ourselves" only rules out this dispatcher — not a colleague, not a client guest, not a Codex or
+Cursor session. The label channel therefore refuses when the actor is unknown: the observation is
+invalid with `refusal=DEGRADED_ACTOR` and goes to `mark_unconfirmed`. Until `Issue.history` is
+verified to carry an actor on this workspace, the comment channel is the only channel that can
+open a gate.
+
+The comment channel reads the **newest** decision strictly newer than the gate card, and refuses
+outright when there is no card of ours on the issue. Reading the oldest decision first froze every
+issue that visits a gate twice: round one's rejection became the answer to round two's card.
 
 **Anything not valid stops the issue.** `mark_unconfirmed` sets `run/onbevestigd` +
 `schakelaar/mens-vereist`, writes one comment saying exactly what it saw and which condition
@@ -1392,7 +1399,7 @@ whole build and the whole CI job. No new dependency, no network in any test.
 | `test_gate.py` (exists) | A | plus: quoted/fenced token never counts; the three write guards each refuse |
 | `test_linear_models.py` | A | canonical label names from leaf+parent; `Contract.parse` on all six WV templates incl. a missing block and an unknown key |
 | `test_linear_machine.py` | A | every entry of the three tables; `assert_may_leave` refuses without a valid observation |
-| `test_linear_gates.py` | A | each of the five conditions failing individually; second rejection → vastgelopen; high-risk bare AKKOORD refused; label channel with degraded actor |
+| `test_linear_gates.py` | A | each of the five conditions failing individually; second rejection → vastgelopen; high-risk bare AKKOORD refused; label channel without an actor refused; second gate round after a rejection |
 | `test_linear_claim.py` | A | two claimers, lowest run id wins; restart writes no second comment; open-claim uniqueness |
 | `test_linear_ledger.py` | A | tail-block round trip; roll-up sums equal the row sums (the manual checksum of WV-161); markdown contains the incompleteness sentence |
 | `test_linear_killswitch.py` | A | pause-alles halts within one cycle; pause-alles cannot be removed; budget thresholds |
@@ -1493,10 +1500,10 @@ thing this whole project is arguing against.
 5. **Native lanes are unmetered.** Codex and Cursor bill inside their own plans. Their runs get a
    ledger row with `gemeten: false` and zero cost. The Kostenboek says so in section 1 and per row.
    The unit economics are structurally incomplete and the document says that out loud.
-6. **`Issue.history` is unverified.** The label channel for gate decisions needs an actor. If
-   history does not supply one, the code degrades to inference from the mutation log and marks every
-   such observation as degraded. Verifying this is WV-159's first acceptance criterion and should
-   happen before the label channel is relied on in a demo.
+6. **`Issue.history` does not supply an actor.** Verified 2026-09-03 against the live workspace:
+   `query IssueHistory` on WV-156 returns `history: { nodes: [] }`. The label channel therefore
+   refuses instead of degrading to "must have been a human", and a gate can only be opened by a
+   comment. WV-159's first acceptance criterion is what would re-open the label channel.
 7. **`idmap.json` is not an input.** Verified 2026-09-03: at least one issue UUID in it does not
    resolve. Everything is resolved by identifier or name at startup and cached in sqlite for the
    life of the process.

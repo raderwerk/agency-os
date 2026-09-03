@@ -4,8 +4,9 @@ Spec 8.2 en architectuur 13. Vier lagen op elkaar:
 
 1. `run/bezet` in Linear -- het signaal naar buiten, zichtbaar op het bord.
 2. Een claimcomment met het run-id, 5 seconden wachten, terugleggen: bij twee
-   claimers wint het laagste run-id en trekt de verliezer zich terug **zonder
-   ook maar iets te schrijven**.
+   claimers wint het laagste run-id en zet de verliezer alles terug wat hij zelf
+   heeft aangezet -- het label gaat terug naar `run/wachtrij`, het claimcomment
+   blijft staan als spoor.
 3. De unieke index `one_open_claim_per_issue` in sqlite -- de echte garantie
    binnen dit proces.
 4. Idempotentie: voordat er een comment komt wordt gecontroleerd of er al een
@@ -25,7 +26,7 @@ from .models import Claim, IssueView
 from .store import Store
 
 __all__ = ["try_claim", "release_claim", "already_ran", "existing_run_comment",
-           "FINAL_LABELS", "BUSY_LABEL"]
+           "FINAL_LABELS", "BUSY_LABEL", "QUEUE_LABEL"]
 
 BUSY_LABEL = "run/bezet"
 QUEUE_LABEL = "run/wachtrij"
@@ -73,7 +74,8 @@ def try_claim(client: LinearClient, store: Store, issue: IssueView, run_id: str,
             issue.id, run_id, issue.identifier, now()):
         return None
 
-    if issue.run_state != "bezet":
+    we_set_the_label = issue.run_state != "bezet"
+    if we_set_the_label:
         client.update_issue(
             issue.id, run_id=run_id, added_labels=[BUSY_LABEL],
             removed_labels=[QUEUE_LABEL] if issue.run_state == "wachtrij" else [],
@@ -88,8 +90,17 @@ def try_claim(client: LinearClient, store: Store, issue: IssueView, run_id: str,
     if settle_s > 0:
         time.sleep(settle_s)
 
-    if _lost_the_settle_window(client, issue.id, run_id, claimed_at, settle_s):
-        # Spec 8.2 stap 4: de verliezer trekt zich terug zonder iets te schrijven.
+    if _lost_the_settle_window(client, store, issue.id, run_id, claimed_at, settle_s):
+        # Spec 8.2 stap 4: de verliezer trekt zich terug. Het claimcomment blijft
+        # staan -- dat is de afspraak -- maar het label gaat terug naar
+        # `run/wachtrij`. Een achtergelaten `run/bezet` zonder open claim maakt
+        # het issue onclaimbaar: de poll zet het daarna in `watching` en niemand
+        # pakt het ooit nog op.
+        if we_set_the_label:
+            client.update_issue(
+                issue.id, run_id=run_id, added_labels=[QUEUE_LABEL],
+                removed_labels=[BUSY_LABEL],
+            )
         store.release_claim(issue.id, run_id, "verloren", now())
         return None
 
@@ -97,18 +108,29 @@ def try_claim(client: LinearClient, store: Store, issue: IssueView, run_id: str,
                  claimed_at=claimed_at, comment_id=comment_id)
 
 
-def _lost_the_settle_window(client: LinearClient, issue_id: str, run_id: str,
+def _lost_the_settle_window(client: LinearClient, store: Store, issue_id: str, run_id: str,
                             claimed_at: datetime, settle_s: float) -> bool:
-    """True als er binnen het venster een claim met een lager run-id staat."""
-    window_start = claimed_at.timestamp() - max(settle_s, 1.0) * 2
+    """True als er binnen het venster een levende claim met een lager run-id staat.
+
+    Twee vernauwingen ten opzichte van "elk claimcomment telt": het venster
+    loopt één settle-tijd terug in plaats van twee, en een run die zijn claim
+    al heeft losgelaten is geen tegenstander meer. Zonder die twee verliest de
+    tweede `run --once` uit het leesmij-recept het venster van zijn eigen
+    voorganger, met de helft kans op een lager run-id.
+    """
+    window_start = claimed_at.timestamp() - max(settle_s, 1.0)
     for comment in client.comments(issue_id):
         match = _CLAIM_RE.search(comment.body)
-        if not match or match.group(1) == run_id:
+        if not match:
+            continue
+        rival = match.group(1)
+        if rival >= run_id:  # gelijk aan onszelf, of een hoger id dat verliest
             continue
         if comment.created_at.timestamp() < window_start:
             continue
-        if match.group(1) < run_id:
-            return True
+        if store.claim_is_closed(issue_id, rival):
+            continue
+        return True
     return False
 
 

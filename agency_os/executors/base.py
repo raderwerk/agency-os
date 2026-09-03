@@ -13,6 +13,7 @@ client die C meegeeft, nooit vanuit deze module zelf.
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from pathlib import Path
@@ -27,6 +28,7 @@ if TYPE_CHECKING:  # pragma: no cover - alleen voor typecontrole
 
 __all__ = [
     "ARTIFACT_TYPES",
+    "ALLOWED_ARTIFACT_HOSTS",
     "ALLOWED_REPOS",
     "OUTCOMES",
     "Artifact",
@@ -44,6 +46,7 @@ __all__ = [
     "assert_safe_worktree",
     "build_executors",
     "failed",
+    "safe_artifacts",
     "utcnow",
     "with_duration",
 ]
@@ -53,6 +56,13 @@ OUTCOMES = frozenset({"klaar", "vraag", "mislukt", "afgebroken"})
 
 #: De vijf bewijstypen uit `Artifact.type`.
 ARTIFACT_TYPES = frozenset({"pr", "preview", "document", "screenshot", "test"})
+
+#: De enige hosts waar een bewijslink heen mag wijzen. Een model verzint de url
+#: in zijn RUNRESULT-blok, en die url gaat rechtstreeks naar `attachmentLinkURL`
+#: op een publiek issue: `javascript:`-links en vreemde domeinen horen daar niet.
+ALLOWED_ARTIFACT_HOSTS = frozenset(
+    {"github.com", "raderwerk.github.io", "linear.app"}
+)
 
 #: De acht publieke, fictieve repositories. Alles daarbuiten is verboden terrein.
 ALLOWED_REPOS = frozenset(
@@ -257,8 +267,36 @@ def assert_safe_worktree(path: Path, repo: str, cfg: ExecutorConfig) -> None:
         raise UnsafeWorktree(f"werkmap {resolved} ligt niet onder {root}")
 
     for prefix in cfg.forbidden_path_prefixes:
-        if str(resolved).startswith(prefix) or str(Path(path)).startswith(prefix):
+        # `os.path.normcase` omdat het bestandssysteem van deze machine niet naar
+        # hoofdletters kijkt en `str.startswith` wel: zonder dit laat
+        # `/users/youp/developer/fightclub/...` deze controle gewoon passeren.
+        if _under(resolved, prefix) or _under(Path(path).expanduser(), prefix):
             raise UnsafeWorktree(f"werkmap {path} valt onder verboden pad {prefix}")
+
+
+def safe_artifacts(
+    artifacts: Sequence[Artifact],
+) -> tuple[tuple[Artifact, ...], tuple[Artifact, ...]]:
+    """Splitst bewijsstukken in (toegestaan, geweigerd) op schema en host.
+
+    Alleen https en alleen de hosts uit `ALLOWED_ARTIFACT_HOSTS`. De geweigerde
+    links verdwijnen niet stil: de aanroeper noemt ze in het comment.
+    """
+    from urllib.parse import urlparse
+
+    kept: list[Artifact] = []
+    refused: list[Artifact] = []
+    for artifact in artifacts:
+        parsed = urlparse(artifact.url or "")
+        host = (parsed.hostname or "").lower()
+        ok = parsed.scheme == "https" and host in ALLOWED_ARTIFACT_HOSTS
+        (kept if ok else refused).append(artifact)
+    return tuple(kept), tuple(refused)
+
+
+def _under(path: Path, prefix: str) -> bool:
+    """Ligt `path` onder `prefix`, ongeacht hoofdlettergebruik?"""
+    return os.path.normcase(str(path)).startswith(os.path.normcase(prefix))
 
 
 def failed(

@@ -29,7 +29,12 @@ from agency_os.executors.base import (
     utcnow,
     with_duration,
 )
-from agency_os.executors.process import ProcessResult, run_process, write_raw_log
+from agency_os.executors.process import (
+    ProcessResult,
+    model_env,
+    run_process,
+    write_raw_log,
+)
 from agency_os.executors.gh import open_pr
 from agency_os.executors.worktree import (
     Worktree,
@@ -42,6 +47,14 @@ from agency_os.executors.worktree import (
 __all__ = ["ClaudeRunner", "RunResult", "parse_claude_json", "parse_runresult"]
 
 SKIP_PERMISSIONS = "--dangerously-skip-permissions"
+
+#: Wat een model met `--dangerously-skip-permissions` alsnog niet mag. De vlag
+#: schakelt de rechtencontrole voor het hele proces uit -- niet alleen voor de
+#: werkmap -- dus de zandbak moet ergens anders staan dan in de prompt. `gh` en
+#: `git push` staan erbij omdat de Spil de PR zelf opent: een model hoeft nooit
+#: bij de organisatiebeheerder van de mens te kunnen.
+DENIED_TOOLS = ("Bash(gh:*)", "Bash(git push:*)", "Bash(git remote:*)")
+SETTINGS_FILE = "model-settings.json"
 
 
 # --------------------------------------------------------------------------
@@ -248,7 +261,8 @@ class ClaudeRunner:
             )
 
         try:
-            proc = run_process(cmd, cwd=cwd, stdin_text=req.prompt, timeout_s=req.timeout_s)
+            proc = run_process(cmd, cwd=cwd, stdin_text=req.prompt, timeout_s=req.timeout_s,
+                               env=model_env(self.cfg))
         except OSError as exc:
             return failed(req, started_at, f"{self.cfg.claude_bin} niet uitvoerbaar: {exc}")
 
@@ -301,12 +315,35 @@ class ClaudeRunner:
         return worktree, worktree.path
 
     def _permission_flags(self, cwd: Path, repo: Optional[str]) -> list[str]:
-        """`--dangerously-skip-permissions` alleen binnen de gecontroleerde zandbak."""
+        """`--dangerously-skip-permissions` alleen binnen de gecontroleerde zandbak.
+
+        En nooit kaal: de vlag gaat samen met een instellingenbestand dat de
+        paden buiten de demo en de gh-commando's alsnog dichtzet.
+        """
+        settings = self._settings_path()
+        flags = ["--settings", str(settings)] if settings else []
         try:
             assert_safe_worktree(cwd, repo or "", self.cfg)
         except UnsafeWorktree:
-            return []
-        return [SKIP_PERMISSIONS]
+            return flags
+        return [*flags, SKIP_PERMISSIONS]
+
+    def _settings_path(self) -> Optional[Path]:
+        """Schrijft de weigerregels weg en geeft het pad terug. None bij een schrijffout."""
+        denied = list(DENIED_TOOLS)
+        for prefix in self.cfg.forbidden_path_prefixes:
+            denied += [f"Read(//{prefix.lstrip('/')}/**)", f"Edit(//{prefix.lstrip('/')}/**)"]
+        for secret in (Path.home() / ".config", Path.home() / ".ssh", Path(self.cfg.state_dir)):
+            denied += [f"Read(//{str(secret).lstrip('/')}/**)",
+                       f"Edit(//{str(secret).lstrip('/')}/**)"]
+        path = Path(self.cfg.state_dir) / SETTINGS_FILE
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(json.dumps({"permissions": {"deny": denied}}, indent=2),
+                            encoding="utf-8")
+        except OSError:  # pragma: no cover - onbruikbare state_dir valt elders om
+            return None
+        return path
 
     def _publish(self, req: ExecutionRequest, worktree: Optional[Worktree]) -> Optional[str]:
         """Push de branch en open (of hervind) de PR."""

@@ -10,6 +10,7 @@ Tijden in comments staan in Europe/Amsterdam, formaat `2026-09-03 11:14`
 
 from __future__ import annotations
 
+import re
 from datetime import datetime, timezone
 from typing import Optional, Sequence
 from zoneinfo import ZoneInfo
@@ -18,6 +19,7 @@ from .models import Artifact, RunRecord
 
 __all__ = [
     "AMSTERDAM",
+    "escape_mentions",
     "local_time",
     "signature",
     "claim_comment",
@@ -42,6 +44,32 @@ def local_time(when: datetime) -> str:
     return when.astimezone(AMSTERDAM).strftime("%Y-%m-%d %H:%M")
 
 
+_MENTION_RE = re.compile(r"@([A-Za-z0-9][\w.-]*)")
+_FENCE_RE = re.compile(r"^\s*(```|~~~)")
+
+
+def escape_mentions(text: str) -> str:
+    """Zet elke `@naam` in modelproza tussen backticks.
+
+    Een comment met `@Codex ...` erin start een echte, betaalde cloudsessie, en
+    `@<een mens>` stuurt een echt bericht. Het schrijfslot kijkt alleen naar de
+    eerste regel, dus proza dat ongewijzigd doorgegeven wordt is een kanaal
+    waarmee een model buiten de claim, de lusdetectie en het Kostenboek om iets
+    kan starten. Binnen codeblokken blijft de tekst zoals hij is; daar rendert
+    Linear toch geen mention.
+    """
+    out: list[str] = []
+    fence: str | None = None
+    for line in (text or "").splitlines():
+        match = _FENCE_RE.match(line)
+        if match and fence is None:
+            fence = match.group(1)
+        elif match and match.group(1) == fence:
+            fence = None
+        out.append(line if fence is not None else _MENTION_RE.sub(r"`@\1`", line))
+    return "\n".join(out)
+
+
 def _euro(amount: float) -> str:
     return ("€ %.2f" % amount).replace(".", ",")
 
@@ -56,25 +84,32 @@ def claim_comment(run_id: str, when: datetime) -> str:
     return f"**Spil** claim {run_id} op {local_time(when)}"
 
 
-def evidence_block(evidence: Sequence[Artifact]) -> str:
-    if not evidence:
+def evidence_block(evidence: Sequence[Artifact],
+                   refused: Sequence[Artifact] = ()) -> str:
+    if not evidence and not refused:
         return "**Bewijs** geen — er is niets opgeleverd om naar te linken."
-    lines = ["**Bewijs**"]
+    lines = ["**Bewijs**"] if evidence else ["**Bewijs** geen bruikbare link."]
     for item in evidence:
         label = item.label or item.type
         lines.append(f"- {label}: {item.url}")
+    if refused:
+        lines.append("")
+        lines.append(f"**Geweigerd bewijs** {len(refused)} link(s) buiten de toegestane "
+                     "domeinen; ik heb ze niet als bijlage gezet:")
+        lines += [f"- `{item.url}`" for item in refused]
     return "\n".join(lines)
 
 
 def run_comment(*, role_title: str, model_display: str, run: RunRecord, body_md: str,
-                evidence: Sequence[Artifact], dod: str, next_state: str) -> str:
+                evidence: Sequence[Artifact], dod: str, next_state: str,
+                refused: Sequence[Artifact] = ()) -> str:
     """Het uitvoercontract van spec 8.3: handtekening, proza, bewijs, DoD, status, staartblok."""
     from .ledger import render_tail_block  # laat in de functie: ledger leest comments terug
 
     return "\n\n".join([
         signature(role_title, model_display, run.run_id, run.gestart),
-        body_md.strip(),
-        evidence_block(evidence),
+        escape_mentions(body_md.strip()),
+        evidence_block(evidence, refused),
         f"**Definition of Done** {dod}",
         f"**Volgende status** {next_state}",
         render_tail_block(run),
@@ -102,7 +137,7 @@ def gate_card(*, gate_no: str, issue, what: str, evidence: Sequence[Artifact], c
         )
     return "\n\n".join([
         f"**Poortkaart {gate_no} · {issue.identifier}**",
-        f"**Waar je ja tegen zegt** {what}",
+        f"**Waar je ja tegen zegt** {escape_mentions(what)}",
         evidence_block(evidence),
         f"**Acceptatiecriteria** {criteria}",
         f"**Reviewers** {reviewers}",

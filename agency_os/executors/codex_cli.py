@@ -27,7 +27,7 @@ from agency_os.executors.base import (
     with_duration,
 )
 from agency_os.executors.claude_runner import RunResult, parse_runresult
-from agency_os.executors.process import run_process, write_raw_log
+from agency_os.executors.process import model_env, run_process, write_raw_log
 from agency_os.executors.gh import find_pr_for_branch, pr_diff
 from agency_os.executors.worktree import (
     Worktree,
@@ -100,7 +100,8 @@ class CodexCliReviewer:
                     uitkomst="afgebroken",
                 )
 
-            proc = run_process(self._command(), cwd=cwd, stdin_text=prompt, timeout_s=req.timeout_s)
+            proc = run_process(self._command(), cwd=cwd, stdin_text=prompt,
+                               timeout_s=req.timeout_s, env=model_env(self.cfg))
         except OSError as exc:
             return failed(req, started_at, f"{self.cfg.codex_bin} niet uitvoerbaar: {exc}")
         finally:

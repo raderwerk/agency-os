@@ -97,6 +97,19 @@ class FatalTest(ConfigTestCase):
             self.load(SPIL_WORKTREE_ROOT="/Users/youp/Developer/Fightclub/TowMotive/.worktrees")
         self.assertIn("verboden", str(caught.exception))
 
+    def test_a_worktree_root_outside_the_clones_is_fatal(self):
+        """`SPIL_WORKTREE_ROOT=$HOME` zou de hele thuismap tot zandbak verklaren."""
+        self.write_file(**REQUIRED)
+        with self.assertRaises(ConfigError) as caught:
+            self.load(SPIL_WORKTREE_ROOT=str(Path.home()))
+        self.assertIn("SPIL_REPO_ROOT", str(caught.exception))
+
+    def test_a_worktree_root_inside_the_clones_is_fine(self):
+        self.write_file(**REQUIRED)
+        cfg = self.load(SPIL_REPO_ROOT=str(self.state_dir),
+                        SPIL_WORKTREE_ROOT=str(self.state_dir / "werkmappen"))
+        self.assertEqual(self.state_dir / "werkmappen", cfg.executors.worktree_root)
+
     def test_budget_must_be_three_rising_numbers(self):
         self.write_file(**REQUIRED)
         for bad in ("200,220", "225,220,200", "veel,220,225"):

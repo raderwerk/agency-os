@@ -282,7 +282,8 @@ def _eur(amount: float) -> str:
 
 
 def render_markdown(store: Store, *, since: date, until: date, prices: Sequence[PriceRow],
-                    fx: FxRate) -> str:
+                    fx: FxRate,
+                    issue_budget: Optional[tuple[int, int, int]] = None) -> str:
     """De drie secties van D05: koersen, runregels, dagafsluitingen."""
     lines: list[str] = [f"# Kostenboek {since.isoformat()} t/m {until.isoformat()}", ""]
 
@@ -313,11 +314,12 @@ def render_markdown(store: Store, *, since: date, until: date, prices: Sequence[
     lines += ["## 3. Dagafsluiting", ""]
     for day in sorted({run.gestart.date() for run in runs}) or [until]:
         day_rollup = rollup(store, day)
-        lines += ["```", _render_close(day_rollup), "```", ""]
+        lines += ["```", _render_close(day_rollup, issue_budget), "```", ""]
     return "\n".join(lines)
 
 
-def _render_close(day: DayRollup) -> str:
+def _render_close(day: DayRollup,
+                  issue_budget: Optional[tuple[int, int, int]] = None) -> str:
     """Het blok uit spec hoofdstuk 11, met supervisie en eerste-keer-goed vooraan in belang."""
     roles = " · ".join(f"{role} {_pct(amount, day.eur)}"
                        for role, amount in sorted(day.by_role.items(), key=lambda kv: -kv[1]))
@@ -336,6 +338,6 @@ def _render_close(day: DayRollup) -> str:
         f"supervisie: {day.supervision_minutes:.0f} minuten menselijke tijd over "
         f"{day.gates_passed + day.gates_rejected} poortmomenten",
         f"eerste-keer-goed: {ok} van {total} ({_pct(ok, total)})",
-        f"issueteller: {day.issue_count} / 250",
+        f"issueteller: {day.issue_count} / {(issue_budget or (200, 220, 250))[2]}",
         f"lussen: {'geen' if not day.loops else day.loops}",
     ])

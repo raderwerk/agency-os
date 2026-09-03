@@ -189,7 +189,9 @@ def _cmd_ledger(cfg: Config, args: argparse.Namespace) -> int:
             day = date.fromordinal(day.toordinal() + 1)
         print(json.dumps(rows, indent=2, ensure_ascii=False))
     else:
-        print(ledger_mod.render_markdown(ctx.store, since=since, until=until, prices=cfg.prices, fx=cfg.fx))
+        print(ledger_mod.render_markdown(ctx.store, since=since, until=until,
+                                         prices=cfg.prices, fx=cfg.fx,
+                                         issue_budget=cfg.issue_budget))
     return OK
 
 

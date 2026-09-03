@@ -17,15 +17,15 @@ from datetime import datetime, timezone
 from typing import Mapping
 
 from . import queries
-from .client import LinearClient
+from .client import LinearClient, LinearError
 from .killswitch import ISSUE_PAUSE_LABEL, read_switches
 from .models import IssueView, PollResult, issue_from_node
 
 __all__ = ["PollConfig", "poll", "BLOCKING_LABELS", "DEAD_STATE_TYPES",
            "DEFAULT_ISSUE_BUDGET"]
 
-# Drempels uit spec 10. PollConfig draagt ze niet, dus wie andere drempels wil
-# roept `killswitch.read_switches` zelf aan met zijn eigen configuratie.
+# Drempels uit spec 10, alleen als standaardwaarde: `PollConfig.issue_budget`
+# draagt ze, zodat `SPIL_ISSUE_BUDGET` ook werkelijk stuurt wat het belooft.
 DEFAULT_ISSUE_BUDGET = (200, 220, 225)
 
 # Labels die een issue uit `ready` houden, met de reden die in het logboek komt.
@@ -45,6 +45,7 @@ class PollConfig:
     panel_identifier: str
     in_scope_states: Mapping[str, tuple[str, ...]]
     max_claims: int
+    issue_budget: tuple[int, int, int] = DEFAULT_ISSUE_BUDGET
 
 
 def poll(client: LinearClient, cfg: PollConfig) -> PollResult:
@@ -57,14 +58,17 @@ def poll(client: LinearClient, cfg: PollConfig) -> PollResult:
     if panel is None and cfg.panel_identifier:
         # Het paneel kan afgesloten zijn en dus buiten de pollronde vallen; dat mag
         # geen crash zijn (architectuur 4: ontbrekend paneel = hartslag overslaan).
+        # Een programmeerfout hoort hier wél gewoon uit te komen, dus alleen
+        # `LinearError` en een onbekend issue worden opgevangen.
         try:
             panel = client.issue(cfg.panel_identifier)
-        except Exception:
+        except (LinearError, KeyError):
             panel = None
 
     issue_count = client.organization_issue_count()
     switches = read_switches(client, panel, issues, issue_count=issue_count,
-                             thresholds=DEFAULT_ISSUE_BUDGET)
+                             thresholds=cfg.issue_budget,
+                             panel_required=bool(cfg.panel_identifier))
 
     ready: list[IssueView] = []
     gates: list[IssueView] = []

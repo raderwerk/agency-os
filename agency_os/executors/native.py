@@ -14,7 +14,7 @@ from __future__ import annotations
 import re
 from dataclasses import replace
 from datetime import datetime, timezone
-from typing import TYPE_CHECKING, Optional, Sequence
+from typing import TYPE_CHECKING, Callable, Optional, Sequence
 
 from agency_os.executors.base import (
     Artifact,
@@ -90,13 +90,14 @@ def mention_body(agent: str, req: ExecutionRequest) -> str:
     )
 
 
-def fallback_comment(app_name: str, status: str, since: datetime, run_id: str) -> str:
+def fallback_comment(app_name: str, status: str, since: datetime, run_id: str,
+                     when: Optional[datetime] = None) -> str:
     """De letterlijke terugvaltekst uit agent-roster.md sectie 4."""
     return (
         f"De tweede reviewer ({app_name}) was niet beschikbaar: sessie stond op {status} "
         f"sinds {_local(since)}. Ik val terug op de Claude-tegenhanger. "
         "Dit is geen volwaardige dubbele review.\n\n"
-        f"**Spil · {app_name}-lane · run {run_id} · {_local(utcnow())}**"
+        f"**Spil · {app_name}-lane · run {run_id} · {_local(when or utcnow())}**"
     )
 
 
@@ -116,13 +117,18 @@ def extract_pr_url(session: "AgentSessionView") -> Optional[str]:
 class NativeExecutor:
     """Stoot Codex of Cursor aan en bewaakt de sessie. Implementeert `AsyncExecutor`."""
 
-    def __init__(self, cfg: ExecutorConfig, agent: str) -> None:
+    def __init__(self, cfg: ExecutorConfig, agent: str, *,
+                 now: Callable[[], datetime] = utcnow) -> None:
         if agent not in _APP_NAMES:
             raise ValueError(f"onbekende native agent: {agent!r}")
         self.cfg = cfg
         self.agent = agent
         self.app_name = _APP_NAMES[agent]
         self.name = f"native-{agent}"
+        # De klok is een parameter en geen import: `_expired` vergelijkt tegen
+        # `receipt.triggered_at`, en een test met een vaste triggertijd mag niet
+        # afhangen van hoe laat het toevallig is (bevinding 1/16).
+        self.now = now
 
     # -- aanstoten ---------------------------------------------------------
 
@@ -139,7 +145,7 @@ class NativeExecutor:
             executor=self.name,
             trigger_comment_id=comment_id,
             session_id=None,
-            triggered_at=utcnow(),
+            triggered_at=self.now(),
             strikes=0,
         )
 
@@ -152,7 +158,7 @@ class NativeExecutor:
         session = self._own_session(client.agent_sessions(issue.id), receipt)
         if session is None:
             if self._expired(receipt):
-                return receipt, self._fall_back(client, issue, receipt, "geen sessie", utcnow())
+                return receipt, self._fall_back(client, issue, receipt, "geen sessie", self.now())
             return receipt, None
 
         receipt = replace(receipt, session_id=session.id)
@@ -196,7 +202,7 @@ class NativeExecutor:
         return max(mine, key=lambda session: session.created_at, default=None)
 
     def _expired(self, receipt: TriggerReceipt) -> bool:
-        age = (utcnow() - receipt.triggered_at).total_seconds()
+        age = (self.now() - receipt.triggered_at).total_seconds()
         return age > self.cfg.native_session_timeout_s
 
     def _claim_delegate(self, client, issue: "IssueView", session, receipt: TriggerReceipt) -> None:
@@ -226,7 +232,7 @@ class NativeExecutor:
                 metered=False,
             ),
             started_at=receipt.triggered_at,
-            ended_at=utcnow(),
+            ended_at=self.now(),
             session_id=session.id,
             raw_log_path=None,
         )
@@ -238,7 +244,7 @@ class NativeExecutor:
         labels = ["run/vastgelopen"]
         if self._is_second_reviewer(issue):
             labels.append("bewijs-ontbreekt")
-        body = fallback_comment(self.app_name, status, since, receipt.run_id)
+        body = fallback_comment(self.app_name, status, since, receipt.run_id, self.now())
 
         if not self.cfg.dry_run:
             client.update_issue(
@@ -258,7 +264,7 @@ class NativeExecutor:
             artifacts=(),
             usage=Usage(source="native-unmetered", metered=False),
             started_at=receipt.triggered_at,
-            ended_at=utcnow(),
+            ended_at=self.now(),
             session_id=receipt.session_id,
             raw_log_path=None,
         )

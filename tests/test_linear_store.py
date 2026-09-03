@@ -6,7 +6,7 @@ from datetime import date, timedelta
 from pathlib import Path
 
 from agency_os.linear.models import MutationRecord
-from agency_os.linear.store import Store, iso, parse_iso
+from agency_os.linear.store import SCHEMA_VERSION, Store, iso, parse_iso
 
 from tests.support_linear import T0, make_run
 
@@ -23,14 +23,15 @@ class SchemaTests(unittest.TestCase):
                 {"meta", "claims", "runs", "mutations", "gate_events", "sessions",
                  "role_runs", "heartbeats"}, names)
             self.assertTrue(path.exists())
-            self.assertEqual(store.get_meta("schema_version"), "1")
+            self.assertEqual(store.get_meta("schema_version"), str(SCHEMA_VERSION))
 
     def test_migrating_twice_is_harmless(self):
         store = Store(":memory:")
         self.addCleanup(store.close)
         store.migrate()
         store.migrate()
-        self.assertEqual(store.get_meta("schema_version"), "1")
+        self.assertEqual(store.get_meta("schema_version"), str(SCHEMA_VERSION))
+        self.assertLessEqual({"role", "model_key", "state"}, store._columns("sessions"))
 
     def test_foreign_keys_and_wal_are_on(self):
         with tempfile.TemporaryDirectory() as tmp:

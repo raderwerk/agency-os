@@ -22,6 +22,7 @@ from tests.executor_fakes import (
     FakeActivity,
     FakeClient,
     fake_config,
+    frozen_clock,
     make_issue,
     make_request,
     make_session,
@@ -88,7 +89,8 @@ class NativeExecutorTestCase(unittest.TestCase):
         self.addCleanup(self.tmp.cleanup)
         self.cfg = fake_config(Path(self.tmp.name))
         self.client = FakeClient()
-        self.executor = NativeExecutor(self.cfg, "codex")
+        self.clock = frozen_clock()
+        self.executor = NativeExecutor(self.cfg, "codex", now=self.clock)
         self.issue = make_issue()
 
     def receipt(self, **overrides) -> TriggerReceipt:
@@ -110,6 +112,7 @@ class NativeExecutorTestCase(unittest.TestCase):
 class TriggerTests(NativeExecutorTestCase):
     def test_the_comment_is_the_trigger(self):
         receipt = self.executor.trigger(self.client, make_request())
+        self.assertEqual(receipt.triggered_at, self.clock())
         self.assertEqual(len(self.client.comments), 1)
         self.assertTrue(self.client.comments[0]["body"].startswith("@Codex "))
         self.assertEqual(receipt.executor, "native-codex")
@@ -222,6 +225,17 @@ class FallbackTests(NativeExecutorTestCase):
         _, result = self.executor.poll(self.client, receipt, self.issue)
         self.assertEqual(result.uitkomst, "mislukt")
         self.assertIn("geen sessie", self.client.comments[0]["body"])
+
+    def test_a_running_session_within_the_deadline_is_never_a_fallback(self):
+        """Bevinding 1/16: dit viel om zodra de echte klok voorbij het uur was."""
+        self.seed(make_session(status="active"))
+        receipt = self.receipt(triggered_at=NOW)
+        _, result = NativeExecutor(self.cfg, "codex", now=frozen_clock(timedelta(minutes=59))).poll(
+            self.client, receipt, self.issue)
+        self.assertIsNone(result)
+        _, late = NativeExecutor(self.cfg, "codex", now=frozen_clock(timedelta(minutes=61))).poll(
+            self.client, receipt, self.issue)
+        self.assertEqual(late.uitkomst, "mislukt")
 
     def test_a_session_that_never_finishes_falls_back_after_the_deadline(self):
         self.seed(make_session(status="active", created_at=NOW - timedelta(hours=23)))

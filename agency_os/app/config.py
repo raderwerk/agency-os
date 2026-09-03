@@ -196,8 +196,17 @@ def _load(overrides: Mapping[str, str]) -> Config:
         dry_run=dry_run,
     )
     for prefix in executors.forbidden_path_prefixes:
-        if str(worktree_root.resolve()).startswith(prefix):
+        if os.path.normcase(str(worktree_root.resolve())).startswith(os.path.normcase(prefix)):
             raise ConfigError(f"SPIL_WORKTREE_ROOT ligt onder een verboden pad: {prefix}")
+    # De werkmapwortel is de zandbak waarin `--dangerously-skip-permissions` aan
+    # gaat. Ligt hij buiten de klonen, dan verklaart een verkeerd gezette
+    # variabele (`SPIL_WORKTREE_ROOT=$HOME`) de hele thuismap tot veilig gebied.
+    resolved_root = repo_root.resolve()
+    if not os.path.normcase(str(worktree_root.resolve())).startswith(
+            os.path.normcase(str(resolved_root))):
+        raise ConfigError(
+            f"SPIL_WORKTREE_ROOT moet binnen SPIL_REPO_ROOT ({resolved_root}) liggen, "
+            f"kreeg {worktree_root}")
 
     cfg = Config(
         linear_api_key=need("SPIL_LINEAR_API_KEY"),

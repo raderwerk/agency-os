@@ -62,12 +62,46 @@ class TryClaimTests(unittest.TestCase):
         self.assertIsNone(result)
         self.assertIsNone(self.store.open_claim("issue-207"))
 
-    def test_the_loser_writes_nothing_after_it_retreats(self):
+    def test_the_loser_writes_no_second_comment_and_hands_the_label_back(self):
         client = FakeLinearClient([self.issue], clock=NOW,
                                   comments={"issue-207": [rival_claim("111111")]})
         claim_module.try_claim(client, self.store, self.issue, "999999", settle_s=0, now=NOW)
+
         after_retreat = [m for m in client.mutations if m.mutation == "commentCreate"]
         self.assertEqual(len(after_retreat), 1)  # alleen de eigen claimcomment
+        # Het label mag niet blijven hangen: `run/bezet` zonder open claim maakt
+        # het issue voorgoed onclaimbaar.
+        self.assertNotIn("run/bezet", client.issue("issue-207").labels)
+        self.assertIn("run/wachtrij", client.issue("issue-207").labels)
+        self.assertEqual(self.store.open_claims(), [])
+
+    def test_a_loser_that_never_set_the_label_leaves_it_alone(self):
+        busy = make_issue(labels=("run/bezet",))
+        client = FakeLinearClient([busy], clock=NOW,
+                                  comments={"issue-207": [rival_claim("111111")]})
+        claim_module.try_claim(client, self.store, busy, "999999", settle_s=0, now=NOW)
+        self.assertEqual([m for m in client.mutations if m.mutation == "issueUpdate"], [])
+
+    def test_two_runs_back_to_back_do_not_fight_over_a_closed_claim(self):
+        """`run --once` twee keer achter elkaar, zoals het leesmij voorschrijft."""
+        client = FakeLinearClient([self.issue], clock=NOW)
+        first = claim_module.try_claim(client, self.store, self.issue, "aaaaaa", settle_s=0,
+                                       now=NOW)
+        claim_module.release_claim(client, self.store, first, final_label="run/klaar")
+
+        second = claim_module.try_claim(client, self.store, client.issue("issue-207"), "bbbbbb",
+                                        settle_s=0, now=NOW)
+        self.assertIsNotNone(second, "de vorige run is klaar en is geen tegenstander meer")
+        self.assertIn("run/bezet", client.issue("issue-207").labels)
+
+    def test_a_rival_that_predates_the_settle_window_never_counts(self):
+        """Een claimcomment van een minuut oud valt buiten een venster van 5 seconden."""
+        client = FakeLinearClient([self.issue], clock=NOW,
+                                  comments={"issue-207": [rival_claim("111111", minutes=-1)]})
+        self.assertFalse(claim_module._lost_the_settle_window(
+            client, self.store, "issue-207", "999999", T0, 5.0))
+        self.assertTrue(claim_module._lost_the_settle_window(
+            client, self.store, "issue-207", "999999", T0 - timedelta(minutes=1), 5.0))
 
     def test_a_higher_rival_run_id_does_not_win(self):
         client = FakeLinearClient([self.issue], clock=NOW,

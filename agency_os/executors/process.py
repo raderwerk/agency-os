@@ -21,7 +21,15 @@ from agency_os.executors.base import CommandFailed
 if TYPE_CHECKING:  # pragma: no cover - alleen voor typecontrole
     from agency_os.executors.base import ExecutorConfig
 
-__all__ = ["ProcessResult", "run_process", "write_raw_log"]
+__all__ = ["ProcessResult", "model_env", "run_process", "write_raw_log", "SAFE_ENV_KEYS"]
+
+#: De enige omgevingsvariabelen die een model meekrijgt. Alles wat hier niet in
+#: staat -- `SPIL_LINEAR_API_KEY`, `GH_TOKEN`, `GITHUB_TOKEN`, `LINEAR_*` -- blijft
+#: bij de Spil. `subprocess.Popen(env=None)` geeft anders de volledige omgeving
+#: van de dispatcher door aan een model dat met `--dangerously-skip-permissions`
+#: draait; dat is de werkplaatssleutel weggeven.
+SAFE_ENV_KEYS = ("PATH", "HOME", "LANG", "LC_ALL", "LC_CTYPE", "TERM", "TMPDIR",
+                 "SHELL", "USER", "LOGNAME", "TZ")
 
 
 @dataclass(frozen=True)
@@ -44,6 +52,24 @@ class ProcessResult:
         if not self.ok:
             raise CommandFailed(self.cmd, self.returncode, self.stderr)
         return self
+
+
+def model_env(cfg: "ExecutorConfig") -> dict[str, str]:
+    """De omgeving waarin een model draait: een lijst met wat mag, niets meer.
+
+    `GH_CONFIG_DIR` wijst naar een lege map, zodat een model dat toch `gh`
+    aanroept niet met de organisatiebeheerder van de mens praat. Beide lanen
+    hebben dat ook niet nodig: de Spil opent de PR zelf.
+    """
+    env = {key: os.environ[key] for key in SAFE_ENV_KEYS if key in os.environ}
+    gh_config = Path(cfg.state_dir) / "geen-gh"
+    try:
+        gh_config.mkdir(parents=True, exist_ok=True)
+    except OSError:  # pragma: no cover - een onbruikbare state_dir valt elders om
+        pass
+    env["GH_CONFIG_DIR"] = str(gh_config)
+    env.setdefault("HOME", str(Path.home()))
+    return env
 
 
 def _kill_group(proc: subprocess.Popen) -> None:

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -88,10 +89,12 @@ class ClaudeRunnerTestCase(unittest.TestCase):
         self.root = Path(self.tmp.name)
         self.cfg = fake_config(self.root)
         self.calls: list[list[str]] = []
+        self.kwargs: list[dict] = []
 
     def patch_run(self, *, stdout: str = "", timed_out: bool = False, returncode: int = 0):
         def fake(cmd, **kwargs):
             self.calls.append(list(cmd))
+            self.kwargs.append(kwargs)
             return make_process(stdout, timed_out=timed_out, returncode=returncode)
 
         patcher = mock.patch.object(claude_runner, "run_process", side_effect=fake)
@@ -177,6 +180,47 @@ class PermissionFlagTests(ClaudeRunnerTestCase):
         self.assertIn(SKIP_PERMISSIONS, self.calls[0])
         self.assertEqual(self.calls[0][:6], [cfg.claude_bin, "-p", "--output-format", "json",
                                              "--model", "sonnet"])
+
+
+class SubprocessEnvironmentTests(ClaudeRunnerTestCase):
+    """Een model krijgt geen sleutels mee, ook niet als de operator ze exporteert."""
+
+    def test_the_model_never_inherits_the_dispatcher_secrets(self):
+        self.patch_run(stdout=claude_stdout())
+        with mock.patch.dict(os.environ, {
+            "SPIL_LINEAR_API_KEY": "lin_api_geheim",
+            "GH_TOKEN": "gho_geheim",
+            "GITHUB_TOKEN": "gho_geheim",
+            "LINEAR_API_KEY": "lin_api_geheim",
+            "PATH": os.environ.get("PATH", "/usr/bin"),
+        }, clear=True):
+            ClaudeRunner(self.cfg).run(make_request())
+
+        env = self.kwargs[0]["env"]
+        self.assertIsNotNone(env, "env=None geeft de volledige omgeving door")
+        self.assertNotIn("SPIL_LINEAR_API_KEY", env)
+        self.assertNotIn("GH_TOKEN", env)
+        self.assertNotIn("GITHUB_TOKEN", env)
+        self.assertNotIn("LINEAR_API_KEY", env)
+        self.assertTrue(env["GH_CONFIG_DIR"].endswith("geen-gh"))
+        self.assertEqual([], list(Path(env["GH_CONFIG_DIR"]).iterdir()))
+
+    def test_the_dangerous_flag_never_travels_alone(self):
+        cfg = git_sandbox(self.root, "raderwerk/agency-os")
+        self.patch_run(stdout=claude_stdout())
+        ClaudeRunner(cfg).run(make_request(
+            issue=make_issue(identifier="WV-158", title="Zandbak"),
+            repo="raderwerk/agency-os", needs_worktree=True))
+
+        cmd = self.calls[0]
+        self.assertIn(SKIP_PERMISSIONS, cmd)
+        self.assertIn("--settings", cmd)
+        settings = json.loads(Path(cmd[cmd.index("--settings") + 1]).read_text(encoding="utf-8"))
+        denied = settings["permissions"]["deny"]
+        self.assertIn("Bash(gh:*)", denied)
+        self.assertIn("Bash(git push:*)", denied)
+        self.assertTrue(any("Fightclub" in rule for rule in denied), denied)
+        self.assertTrue(any(str(cfg.state_dir).lstrip("/") in rule for rule in denied), denied)
 
 
 class PullRequestTests(ClaudeRunnerTestCase):

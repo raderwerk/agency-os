@@ -56,7 +56,7 @@ python -m agency_os ledger [--since D] [--format markdown|json] [--logbook]
 
 Afloopcodes: `0` in orde, `1` ongezond of geweigerd, `2` configuratiefout, `130` onderbroken. De wachthond hoort in een ánder proces: `*/10 * * * * python -m agency_os heartbeat --watchdog`.
 
-Begin altijd met `status` en daarna `dry-run`. Een droogloop doet de hele cyclus -- lezen, poorten beoordelen, routeren, de prompt bouwen -- en drukt per issue af welke mutatie hij zou hebben gedaan, plus de routering: welk issue naar welke rol, welk model en welke laan zou gaan. Er gaat geen enkele mutatie over de lijn; de schrijfmethodes komen niet verder dan het handelingenlogboek. Pas als die uitkomst klopt, is `run --once` aan de beurt.
+Begin altijd met `status` en daarna `dry-run`. Een droogloop doet de hele cyclus -- lezen, poorten beoordelen, routeren, de prompt bouwen -- en drukt per issue af welke mutatie hij zou hebben gedaan, plus de routering: welk issue naar welke rol, welk model en welke laan zou gaan. Er gaat geen enkele mutatie over de lijn; de schrijfmethodes komen niet verder dan het handelingenlogboek. Een droogloop heeft ook zijn eigen geheugen: hij schrijft in `<SPIL_STATE_DIR>/dry-run.sqlite3` en raakt de claims, de lusdetectie en het Kostenboek van de echte dispatcher niet aan. Pas als die uitkomst klopt, is `run --once` aan de beurt.
 
 `run --loop` is het echte werk: één proces, één cyclus per `SPIL_INTERVAL_S`, cycli overlappen nooit. SIGINT en SIGTERM laten de lopende cyclus aflopen en stoppen daarna.
 
@@ -67,7 +67,7 @@ Er zijn drie remmen, van zacht naar hard, en ze zitten alle drie in Linear en ni
 | Wat | Waar | Wat er gebeurt |
 |---|---|---|
 | `schakelaar/pauze` | op één issue | dat issue wordt overgeslagen; de rest loopt door |
-| `schakelaar/pauze-alles` | op het bedieningspaneel (`SPIL_PANEL_ISSUE`, standaard WV-156) | binnen één pollronde start er niets meer, lopende runs worden afgebroken en op elk geraakt issue komt één afbreekcomment |
+| `schakelaar/pauze-alles` | op het bedieningspaneel (`SPIL_PANEL_ISSUE`, standaard WV-156) | binnen één pollronde start er niets meer; elke openstaande claim gaat terug naar `run/wachtrij` met één afbreekcomment per geraakt issue. Een run die op dat moment al draait, loopt af — er is geen procesregister om hem mee af te schieten, dus dat kan tot `SPIL_RUN_TIMEOUT_S` (standaard 30 minuten) duren |
 | Ctrl-C / SIGTERM | op het proces | de lopende cyclus loopt af, daarna stopt de lus |
 
 `schakelaar/pauze-alles` is de noodrem. De Spil mag dat label wél zetten en nooit weghalen: het weghalen is geen belofte in een prompt maar een ontbrekende mogelijkheid in `update_issue` (slot 5). Aanzetten kost dus één klik in Linear, uitzetten is per definitie mensenwerk.
@@ -95,7 +95,7 @@ Volgorde van winnen: vlaggen op de commandoregel, dan `os.environ`, dan `~/.conf
 | `SPIL_LINEAR_ENDPOINT` | `https://api.linear.app/graphql` | |
 | `SPIL_CONFIG_FILE` | `~/.config/raderwerk/spil.env` | alleen uit `os.environ`; in het bestand zelf zou hij naar zichzelf wijzen |
 | `SPIL_REPO_ROOT` | `~/Developer/Personal/Raderwerk` | waar de klonen van de doelrepo's staan |
-| `SPIL_WORKTREE_ROOT` | `<repo_root>/.worktrees` | mag nooit onder een verboden pad liggen; dat is fataal bij het opstarten |
+| `SPIL_WORKTREE_ROOT` | `<repo_root>/.worktrees` | moet binnen `SPIL_REPO_ROOT` liggen en nooit onder een verboden pad; allebei fataal bij het opstarten |
 | `SPIL_CLAIM_SETTLE_S` | `5` | het venster waarin een tweede claimer zich terugtrekt |
 | `SPIL_RUN_TIMEOUT_S` / `SPIL_NATIVE_SESSION_TIMEOUT_S` | `1800` / `3600` | |
 | `SPIL_CLAUDE_BIN` / `SPIL_CODEX_BIN` / `SPIL_GH_BIN` / `SPIL_GIT_BIN` | `claude` / `codex` / `gh` / `git` | `status` zegt of ze in PATH staan |

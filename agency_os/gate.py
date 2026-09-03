@@ -30,6 +30,12 @@ class InvalidGateToken(ValueError):
 class GateDecision:
     outcome: str  # "akkoord" of "afgekeurd"
     token: str
+    reason: Optional[str] = None  # de woorden van de mens bij een afkeuring
+
+
+#: `AFGEKEURD` kaal, of met de reden erachter: precies de vorm die de poortkaart
+#: vraagt ("AFGEKEURD: <reden>", zie comments.gate_card).
+_AFGEKEURD_RE = re.compile(rf"^{AFGEKEURD}(?::\s*(?P<reden>.+))?$")
 
 
 def _first_line(comment_text: Optional[str]) -> str:
@@ -38,17 +44,34 @@ def _first_line(comment_text: Optional[str]) -> str:
     return comment_text.strip().splitlines()[0].strip()
 
 
+def _rest(comment_text: Optional[str]) -> Optional[str]:
+    """Alles onder de eerste regel, als de mens zijn reden daar neerzette."""
+    lines = (comment_text or "").strip().splitlines()[1:]
+    body = "\n".join(lines).strip()
+    return body or None
+
+
 def parse_gate_decision(comment_text: str, *, high_risk: bool = False) -> Optional[GateDecision]:
     """Leest de eerste regel van een poortcomment.
 
     Geeft `None` als de comment geen akkoord- of afkeurtoken is (dus geen
     poortbeslissing). Gooit `InvalidGateToken` als de eerste regel wel met
     AKKOORD begint maar het verkeerde token is voor dit issue.
+
+    `AKKOORD` moet exact zijn. `AFGEKEURD` mag de reden op dezelfde regel
+    dragen (`AFGEKEURD: te vaag`), want dat is de vorm die de poortkaart de
+    mens voorschrijft; die reden komt mee als `GateDecision.reason` en is de
+    opdracht voor de volgende ronde.
     """
     first_line = _first_line(comment_text)
 
-    if first_line == AFGEKEURD:
-        return GateDecision(outcome="afgekeurd", token=first_line)
+    afgekeurd = _AFGEKEURD_RE.match(first_line)
+    if afgekeurd:
+        return GateDecision(
+            outcome="afgekeurd",
+            token=first_line,
+            reason=afgekeurd.group("reden") or _rest(comment_text),
+        )
 
     if first_line == HIGH_RISK_TOKEN:
         return GateDecision(outcome="akkoord", token=first_line)
